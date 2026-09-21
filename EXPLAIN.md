@@ -246,3 +246,118 @@ acceptance, which is the fallback SPEC.md's risk table anticipated.
 - **The 10-review threshold is a guess** inherited from SPEC.md, not a tuned
   parameter. It drops 60,534 games, by far the largest cut. Nothing has been
   measured about what is in there.
+
+---
+
+## Phase 2 — Embeddings
+
+**Acceptance: PASS.** `embed/variants.md` scores all three variants on both
+metrics, chooses one, and records the reasoning. Chosen: **variant C, hybrid at
+α = 0.5** — an equal blend of bge-small text embeddings and tag-co-occurrence
+embeddings, 512-d.
+
+Full reasoning lives in [embed/variants.md](embed/variants.md). The points that
+belong in a design log rather than a results table:
+
+### The comparison nearly ranked itself backwards
+
+Both A and B take tags as input — A's template carries a `Tags:` line, B is
+built from nothing else — so scoring either on a masked tag measures
+memorisation. The leaky numbers said B beat A 80.5% to 57.4%. With the masked
+tags removed at build time the honest gap is 52.9% to 50.1%: **2.8 points, not
+23**.
+
+The subtle part is that the leak size differs by variant (B −27.6 pts, A −7.3
+pts), because tags are B's only input and one line of A's. Only B *looks* like
+it needs a holdout, so the natural move — fix B, leave A — would have been
+wrong in both directions simultaneously.
+
+### A proxy metric was badly pessimistic
+
+int8 quantisation preserved only **71.8%** of each game's top-10 neighbourhood
+against fp32, at mean cosine 0.9725. For a product that is entirely nearest
+neighbours, that reads as disqualifying.
+
+It was not. Encoding both in full and scoring downstream gave 57.4% vs 57.0%
+tag prediction and identical 1.28x genre lift. The reordering sits among
+near-ties that are semantically interchangeable — swapping rank 4 and rank 7
+among a dozen equivalent metroidvanias moves the statistic and moves nothing a
+viewer sees. int8 ships: 1.6x faster, 4x smaller, no measurable cost.
+
+The general lesson: a proxy that is *cheap* is not thereby *conservative*. It
+was wrong in the safe-looking direction, which is the direction that gets
+believed.
+
+### A hypothesis tested and rejected
+
+Variant A retrieved on apparent title collisions — Hollow Knight → "Hollow
+Floor", "Hollowed"; Cuphead → "Gunheart", "Head Shot", "SQUAREHEAD". The obvious
+diagnosis was that the template leads with the name.
+
+Encoding without the title refuted it: Hollow Knight still returns "Hollow
+Floor", Cuphead still returns "Gunheart". The collisions are driven by
+description prose, not names — every one of those games advertises itself as a
+fast, punishing action game with striking art. That is exactly the failure
+SPEC.md predicted from marketing copy; the title was a red herring, and the
+name stays in the template.
+
+### Metrics that did not earn their place
+
+Genre agreement scored 1.28–1.30x for **every variant**, including pure text.
+Steam has ~20 genres for 56,129 games and `Indie` alone covers 59%, so random
+pairs already agree 75.4% of the time. It is in SPEC.md, it is reported, and
+it contributed nothing. Saying so is more useful than presenting it as
+corroboration.
+
+Top-tag agreement discriminated well (57.5% → 84.5%) but is circular: it asks
+whether an embedding clusters by its own input, which structurally favours
+tag-derived variants. Reported beside the held-out number, never instead of it.
+
+That left the α tie-break to 15 hand-picked spot checks — a sample of 15,
+selected by the person with a view on the answer. Worth stating plainly.
+
+### Why α=0.5 over α=0.7
+
+The clean metrics disagreed: α=0.7 is 1.8 points better at recovering a masked
+tag, α=0.5 is 5.6 points better at clustering games sharing their defining tag.
+They pull apart because masked-tag prediction rewards inferring tags from prose
+— the confounded capability.
+
+Spot checks favoured α=0.5 on 3 of 4 probes. The deciding case was Europa
+Universalis IV: α=0.7 drops *Victoria II*, *Victoria 3* and *Imperator: Rome*
+for the *Making History* series. Those Paradox titles are near-identical in
+play, and a map that separates them is wrong in a way a viewer notices
+immediately. α=0.5 is also the only α that means what its number says.
+
+### The quadratic-weight trap
+
+Both halves are unit vectors, so for `[α·A, (1−α)·B]` the hybrid cosine is
+`(α²·cos_A + (1−α)²·cos_B) / (α² + (1−α)²)`. Weights go as **α²**. α=0.7 is
+84/16, not 70/30. Reporting it as 70/30 would misdescribe the result by a
+factor of two.
+
+Relatedly, dimension counts carry no weight of their own: A is 384-d and B is
+128-d, but each is unit-norm before scaling, so they contribute equally at
+α=0.5 despite the 3:1 size difference.
+
+### Variant B is the quiet result
+
+453 tags, no neural model, **3.4 seconds**, and it beats the transformer on
+every clean metric (52.9% vs 50.1% tag prediction; 83.6% vs 57.5% top-tag). The
+chosen hybrid beats B by 3.1 points — real, but modest against a 165x build-time
+gap. If the transformer half were cut, B alone would ship.
+
+SPEC.md predicted this ("B often wins; that is a finding worth reporting").
+It was right, and for the reason given: thousands of players voting on what a
+game *is* beats one publisher describing what they wish it were.
+
+### Known weaknesses at this phase
+
+- α was searched at three points, not tuned; the optimum is between 0.5 and 0.7
+  and was not located.
+- Spot checks decided the tie-break on a self-selected sample of 15.
+- Every metric here is k-NN in embedding space. Whether these clusters survive
+  HDBSCAN and UMAP into something navigable is Phases 3–4, and nothing yet
+  proves it.
+- Review counts still mix dump and crawl vintages — irrelevant to embeddings,
+  relevant to Phase 5 importance ranking.

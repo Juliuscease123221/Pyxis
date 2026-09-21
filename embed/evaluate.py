@@ -152,6 +152,45 @@ def genre_agreement(g: Games, X: np.ndarray, k: int = 10, sample: int = 4000,
     }
 
 
+def top_tag_agreement(g: Games, X: np.ndarray, k: int = 10, sample: int = 3000,
+                      n_generic: int = 12, seed: int = 0) -> dict:
+    """Fraction of a game's k-NN that also carry its single most-voted tag.
+
+    Restricted to games whose top tag is not one of the `n_generic` most common
+    in the catalog, because "Indie" and "Singleplayer" lead thousands of games
+    and agreement on them measures nothing.
+
+    This is the most discriminating of the automated metrics -- genre agreement
+    saturates (only ~20 coarse genres) and so does top-3 tag agreement. It is,
+    however, circular for any tag-derived variant: it asks whether an embedding
+    clusters by its own input, which structurally favours tag-heavy variants.
+    Read it alongside the held-out tag-prediction score, not instead of it.
+    """
+    rng = np.random.default_rng(seed)
+    freq: dict[str, int] = {}
+    for tags in g.tags:
+        for t in tags:
+            freq[t] = freq.get(t, 0) + 1
+    generic = {t for t, _ in sorted(freq.items(), key=lambda kv: -kv[1])[:n_generic]}
+
+    elig = np.asarray([i for i in range(len(g))
+                       if g.tags[i] and g.tags[i][0] not in generic], dtype=np.int64)
+    if len(elig) == 0:
+        return {"agreement": float("nan"), "n_sampled": 0}
+    idx = rng.choice(elig, size=min(sample, len(elig)), replace=False)
+    nn = knn(X, idx, k)
+
+    hits = tot = 0
+    for row, i in enumerate(idx):
+        t = g.tags[i][0]
+        for j in nn[row]:
+            tot += 1
+            if t in g.tags[j]:
+                hits += 1
+    return {"agreement": hits / tot if tot else float("nan"),
+            "n_sampled": int(len(idx)), "n_generic_excluded": n_generic}
+
+
 def tag_prediction(g: Games, X: np.ndarray, masked: dict[int, str], k: int = 10,
                    top: int = 5, sample: int = 4000, seed: int = 0) -> dict:
     """Precision@`top`: does a game's masked tag appear in its neighbours' tags?

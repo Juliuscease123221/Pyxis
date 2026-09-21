@@ -88,6 +88,14 @@ def main() -> int:
         X = build(XA, XB, alpha)
         ta, tb = effective_weights(alpha)
         name = f"{args.prefix}_a{str(alpha).replace('.', '')}"
+        # A hybrid is only clean for tag-prediction if BOTH halves are: a
+        # leaky text half would reintroduce the masked tag through the
+        # concatenation, however clean the tag half is.
+        clean = (
+            bool(meta_a.get("holdout")) or "holdout" in args.a
+        ) and (
+            bool(meta_b.get("holdout")) or "holdout" in args.b
+        )
         meta = {
             "variant": "C",
             "method": f"hybrid [{alpha}*A, {1 - alpha}*B]",
@@ -97,6 +105,7 @@ def main() -> int:
             "effective_tag_share": tb,
             "source_a": args.a,
             "source_b": args.b,
+            "holdout": clean,
             "n_games": len(g),
         }
         save_vectors(name, X, g.appids, meta)

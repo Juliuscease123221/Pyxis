@@ -28,11 +28,15 @@ from pathlib import Path
 import numpy as np
 
 from .common import VEC_DIR, choose_masked_tags, load_games, load_vectors
-from .evaluate import PROBES, genre_agreement, knn, tag_prediction
+from .evaluate import PROBES, genre_agreement, knn, tag_prediction, top_tag_agreement
 
-# Variants built with the masked tags removed, so their tag-prediction score is
-# honest. Anything else is reported as circular.
-HOLDOUT_SUFFIX = "_holdout"
+def is_clean(name: str, meta: dict) -> bool:
+    """Was this variant built without the masked tags?
+
+    Prefer the recorded flag; fall back to the name, since the hybrid variants
+    carry "holdout" in the middle rather than as a suffix.
+    """
+    return bool(meta.get("holdout")) or "holdout" in name
 
 
 def probe_neighbours(g, X, appid: int, k: int = 5) -> list[str]:
@@ -45,7 +49,9 @@ def probe_neighbours(g, X, appid: int, k: int = 5) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default=str(Path(__file__).parent / "variants.md"))
+    ap.add_argument("--out",
+                    default=str(Path(__file__).parent / "variants_data.md"),
+                    help="generated tables; variants.md is authored and holds the decision")
     ap.add_argument("--sample", type=int, default=4000)
     args = ap.parse_args()
 
@@ -66,7 +72,8 @@ def main() -> int:
 
         ga = genre_agreement(g, X, k=10, sample=args.sample)
         tp = tag_prediction(g, X, masked, k=10, sample=args.sample)
-        clean = bool(meta.get("holdout")) or name.endswith(HOLDOUT_SUFFIX)
+        tt = top_tag_agreement(g, X, k=10, sample=3000)
+        clean = is_clean(name, meta)
 
         rows.append({
             "name": name,
@@ -76,12 +83,14 @@ def main() -> int:
             "genre_lift": ga["lift"],
             "genre_raw": ga["agreement"],
             "tagp": tp["precision_at_k"],
+            "toptag": tt["agreement"],
             "clean": clean,
             "gps": meta.get("games_per_sec"),
             "hk": probe_neighbours(g, X, 367520, 5),
         })
         flag = "" if clean else "  (circular)"
         print(f"  {name:<28} lift {ga['lift']:.2f}x   "
+              f"toptag {tt['agreement'] * 100:5.1f}%   "
               f"tag@5 {tp['precision_at_k'] * 100:5.1f}%{flag}")
 
     baseline = genre_agreement(g, load_and_unit(names[0], g), sample=args.sample)["baseline"]
@@ -117,22 +126,22 @@ def write_report(path, g, rows, baseline) -> None:
              "built *without* those tags — see the circularity note below.\n")
 
     L.append("\n## Results\n")
-    L.append("| variant | dims | genre lift | tag pred @5 | method |")
-    L.append("| --- | ---: | ---: | ---: | --- |")
+    L.append("| variant | dims | genre lift | top-tag | tag pred @5 | method |")
+    L.append("| --- | ---: | ---: | ---: | ---: | --- |")
     for r in sorted(clean, key=lambda r: -r["tagp"]):
         L.append(f"| `{r['name']}` | {r['dims']} | {r['genre_lift']:.2f}x | "
-                 f"{r['tagp'] * 100:.1f}% | {r['method']} |")
+                 f"{r['toptag'] * 100:.1f}% | {r['tagp'] * 100:.1f}% | {r['method']} |")
 
     if dirty:
         L.append("\n### Scored, but circular on tag prediction\n")
         L.append("These variants were built from inputs containing the masked "
                  "tag, so their tag-prediction score is inflated and is **not** "
                  "comparable with the table above. Listed for completeness.\n")
-        L.append("| variant | dims | genre lift | tag pred @5 (inflated) | method |")
-        L.append("| --- | ---: | ---: | ---: | --- |")
+        L.append("| variant | dims | genre lift | top-tag | tag pred @5 (inflated) | method |")
+        L.append("| --- | ---: | ---: | ---: | ---: | --- |")
         for r in sorted(dirty, key=lambda r: -r["tagp"]):
             L.append(f"| `{r['name']}` | {r['dims']} | {r['genre_lift']:.2f}x | "
-                     f"{r['tagp'] * 100:.1f}% | {r['method']} |")
+                     f"{r['toptag'] * 100:.1f}% | {r['tagp'] * 100:.1f}% | {r['method']} |")
 
     L.append("\n## Spot check: Hollow Knight's 5 nearest neighbours\n")
     L.append("The metric that catches an embedding which has learned marketing "
