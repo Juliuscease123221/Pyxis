@@ -1,0 +1,20 @@
+# Data: the dump is ~600MB and is reproducible from ingest/README.md
+data/*.csv
+data/*.parquet
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Node (viewer, Phase 6)
+node_modules/
+
+# OS
+Thumbs.db
+.DS_Store
