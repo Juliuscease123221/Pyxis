@@ -18,3 +18,7 @@ node_modules/
 # OS
 Thumbs.db
 .DS_Store
+
+# Phase 2: model weights and vectors are reproducible from embed/README.md
+data/models/
+data/vectors/
