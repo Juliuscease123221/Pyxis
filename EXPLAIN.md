@@ -45,31 +45,6 @@ we taken the obvious path of using only the parquet (smaller, typed, faster),
 the deciding field would have been silently absent and every downstream cluster
 would have been built on marketing copy alone.
 
-### The malformed header
-
-`games.csv` ships a 39-name header over 40-field data rows. Upstream emitted
-`Discount` and `DLC count` as one token, `DiscountDLC count`, having dropped the
-comma between them.
-
-Read naively, pandas sees one fewer name than fields and silently promotes the
-first data column (`AppID`) to the DataFrame index, shifting every named column
-one place left. The failure is quiet and it is not uniform: `df['AppID']`
-returns game *names*, which is loud enough to catch, but columns after the merged
-token land back in near-alignment, so a coverage check can return a plausible
-number while the loader is reading names into the appid field. Ours did exactly
-that — the first load kept 23 of 125,855 rows.
-
-The fix is `ingest/csv_schema.py`: an explicit 40-name `COLUMNS` list, always
-read with `names=COLUMNS, header=0, index_col=False`. Alignment was verified
-positionally (3000/3000 sampled rows carry 40 fields) and then semantically
-against a known row — appid 367520 returns *Hollow Knight*, 403,641 positive /
-12,305 negative, matching a live SteamSpy call exactly, with tags led by
-Metroidvania and Souls-like.
-
-**What would break if it were wrong:** everything, invisibly. Embeddings built
-on a shifted frame would encode screenshot URLs as tag text and still produce a
-map that looks fine from a distance.
-
 ### Filtering
 
 Drops, from 125,855 to 56,129:
@@ -80,21 +55,12 @@ Drops, from 125,855 to 56,129:
 | `name_pattern` | 8,288 |
 | `software_genre` | 904 |
 
-The name filter needed two passes. The first version matched bare `\bmovie\b`,
-`\bdlc\b`, `\bartwork\b` and `\btrailer\b`, which is wrong: *The LEGO Movie -
-Videogame* (5,264 reviews), *DLC Quest* (6,244), *Please, Touch The Artwork*,
-*Trailer Shop Simulator* and *The LEGO NINJAGO Movie Video Game* (7,179) are all
-real games. Auditing the drops by review count surfaced them — only 96 of the
-8,358 name-drops had ≥10 reviews at all, and roughly ten of those 96 were false
-positives.
-
-The filter is now two-tier: unambiguous words (`playtest`, `soundtrack`,
-`artbook`, `season pass`, `benchmark`) match anywhere; ambiguous ones are
-anchored to the shapes that actually mark a non-game SKU — `(DLC)`, `- DLC`,
-`OST` at end of title, `artwork pack`. Non-game *videos* are caught by genre
-(`Documentary`, `Movie`, `Short`, `Episodic`) rather than by name, which is the
-more reliable signal. `ingest/test_filters.py` pins all 26 names as regression
-cases.
+The filter is two-tier: unambiguous words (`playtest`, `soundtrack`, `artbook`,
+`season pass`, `benchmark`) match anywhere; ambiguous ones are anchored to the
+shapes that actually mark a non-game SKU — `(DLC)`, `- DLC`, `OST` at end of
+title, `artwork pack`. That split was forced by bug 3 below. Non-game *videos*
+are caught by genre (`Documentary`, `Movie`, `Short`, `Episodic`) rather than by
+name, which is the more reliable signal.
 
 `software_genre` drops only when *every* genre on the app is a software genre,
 so *Game Dev Tycoon* (Simulation + Game Development) survives while a pure
@@ -103,6 +69,146 @@ so *Game Dev Tycoon* (Simulation + Game Development) survives while a pure
 **Considered and rejected:** filtering on the `Categories` column, and trusting
 the dataset's "Only published games, no DLCs" claim. The claim is false — the
 very first row of the CSV is *Black Dragon Mage Playtest*.
+
+---
+
+## Phase 1 — bugs found, how they surfaced, what they would have cost
+
+Three real defects, all of the same species: **silent, plausible-looking
+corruption of the input**. None of them raises an exception. Each produces a
+dataset that loads, passes a casual glance, and yields a map that looks fine
+from a distance. That is the failure mode this phase exists to catch, and it is
+why SPEC.md says to validate upstream before moving downstream.
+
+### Bug 1 — the parquet's `Tags` column is empty
+
+**Symptom.** `pyarrow` reported the column's type as `list<element: null>`.
+Every one of the 124,146 rows held an empty list; tag coverage was exactly 0.0%.
+The `genres` column in the same file was populated normally, so the file looked
+healthy.
+
+**How it was found.** By reading the schema before reading the data. The type
+`list<element: null>` is only producible when *every* value is an empty list —
+arrow has no non-null element to infer a type from. The type annotation itself
+was the tell, ahead of any row inspection. A coverage count then confirmed it:
+0 of 124,146.
+
+**Root cause.** Upstream, SteamSpy's tags are a `{tag: votes}` dict. The
+parquet conversion appears to have coerced that dict to a list and dropped the
+contents.
+
+**What it would have cost.** The parquet is the file you would naturally
+choose — 184MB against 401MB, typed, columnar, faster, and it is the one the
+HuggingFace viewer shows by default. Taking it alone loses community tags
+entirely, which are the deciding field for the whole project. Clustering would
+then have run on store descriptions only: marketing copy in which, per
+SPEC.md's own warning, every game claims to be an atmospheric epic adventure.
+The map would have rendered beautifully and grouped games by *ad-copy style*
+rather than gameplay — and nothing downstream would have flagged it, because
+there is no error to raise. The differentiating claim of the project would have
+been quietly false.
+
+**Fix.** Tags from `games.csv`, `short_desc` from the parquet, joined on appid
+(`ingest/load_dump.py`). Both files are required; neither is sufficient.
+
+### Bug 2 — 39-name header over 40-field rows
+
+**Symptom.** The first full load kept **23 rows out of 125,855**, attributing
+125,809 of the drops to `bad_appid`. `int(r.appid)` was raising `ValueError:
+invalid literal for int() with base 10: 'Black Dragon Mage Playtest'` — the
+appid field contained a game *name*.
+
+**How it was found.** The absurd keep count (23) made it impossible to miss;
+the interesting part was diagnosing it. Printing the header alongside a data row
+showed `About the game = '0'` and `Metacritic score = 'False'` — text and
+booleans in numeric fields, all shifted by one from index 8 onward. Counting
+fields confirmed it: the header carries 39 names, and 3000 of 3000 sampled data
+rows carry 40. Upstream dropped the comma between `Discount` and `DLC count`,
+emitting the single token `DiscountDLC count`.
+
+Given one fewer header name than data fields, pandas silently promotes the first
+data column (`AppID`) to the DataFrame index and shifts every named column one
+place left.
+
+**What it would have cost.** This one is nastier than it first appears, because
+the corruption is *non-uniform*. The merged header token swallows two data
+columns, so columns positioned after it drift back into near-alignment while
+columns before it are badly wrong. The practical consequence: my
+`evaluate_dumps.py` tag-coverage check returned **the same 97.7% both before and
+after the fix** — the `Tags` column happened to land correctly under `usecols`.
+So the coverage number, the thing gating the dump choice, looked completely
+healthy while the loader was writing game names into the primary key.
+
+Had the keep count not been so obviously broken, a slightly luckier shift would
+have produced a database that loaded cleanly with `review_count` reading the
+`Score rank` column — plausible integers, wrong field. Importance ranking in
+Phase 5 and the frontier scoring in Phase 7 both key off `review_count`, so the
+zoomed-out view would have shown a confidently wrong selection of games with no
+symptom anywhere.
+
+**Fix.** `ingest/csv_schema.py` pins an explicit 40-name `COLUMNS` list, always
+read via `names=COLUMNS, header=0, index_col=False`. Verified positionally
+(3000/3000 rows carry 40 fields) and then *semantically* against ground truth:
+appid 367520 returns *Hollow Knight*, 403,641 positive / 12,305 negative,
+matching a live SteamSpy call exactly. Positional verification alone would not
+have been enough — it proves the count, not the alignment.
+
+### Bug 3 — the name filter discarded real games
+
+**Symptom.** None visible. The filter dropped 8,358 rows and the surviving
+count still cleared the 50k bar, so every acceptance check passed.
+
+**How it was found.** By deliberately auditing the drops rather than the keeps —
+listing everything the name filter rejected, sorted by review count descending.
+The top of that list was self-evidently wrong: *The LEGO NINJAGO Movie Video
+Game* (7,179 reviews), *DLC Quest* (6,244), *The LEGO Movie - Videogame*
+(5,264), *She Sees Red - Interactive Movie* (3,076), *Joe Danger 2: The Movie*,
+*Please, Touch The Artwork*, *Trailer Shop Simulator*. My patterns `\bmovie\b`,
+`\bdlc\b`, `\bartwork\b` and `\btrailer\b` were matching words that occur inside
+legitimate game titles.
+
+Only 96 of the 8,358 name-drops had ≥10 reviews at all, and about ten of those
+were genuine false positives — roughly 0.02% of the catalog.
+
+**What it would have cost.** Less than the other two, and worth stating
+honestly: ~10 games out of 56,129 is a rounding error in any aggregate metric.
+The cost is not statistical, it is demo-facing. These are recognisable titles,
+and the cluster they belong to is one a viewer is likely to zoom into. A map
+that silently lacks the LEGO games in its licensed-platformer region is wrong in
+exactly the way a person notices and a benchmark does not.
+
+The broader lesson is the transferable one: **acceptance checks measure what
+survived, never what was discarded.** A filter can only fail in the direction
+the checks do not look. Auditing drops is not optional.
+
+**Fix.** Two-tier patterns (above), plus `ingest/test_filters.py` pinning all 26
+probe names — 14 real games that must survive, 12 non-games that must not — as
+regression cases, so re-broadening a pattern fails a test rather than silently
+shrinking the catalog.
+
+### Tag ordering — checked, not a bug
+
+Not a defect, but the same class of risk, so it was verified rather than
+assumed. The Phase 2 text template takes the *leading* tags as the most-voted
+ones; had the dump or the join alphabetised them, "2D" and "Action" would head
+every string and top-N truncation would select the alphabetically earliest tags
+instead of the defining ones — silently, with no error.
+
+`ingest/verify_tag_order.py` fetches live SteamSpy vote counts for 15 well-known
+games and rank-correlates stored order against vote-descending order, with
+alphabetical order as a control:
+
+```
+mean rank correlation vs VOTE order    1.000   (want ~1.0)
+mean rank correlation vs ALPHA order  -0.071   (want ~0.0)
+```
+
+All 15 probes scored exactly 1.000 against votes. Stored order is vote order,
+and the leading tags are the defining ones — *Hollow Knight* → Metroidvania,
+Souls-like, Platformer; *The Witcher 3* → Open World, RPG, Story Rich; *Europa
+Universalis IV* → Grand Strategy, Strategy, Historical. The control matters: a
+high vote correlation would be meaningless if vote order and alphabetical order
+happened to coincide.
 
 ### The crawler
 
