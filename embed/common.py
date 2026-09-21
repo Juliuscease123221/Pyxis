@@ -94,7 +94,7 @@ def load_games(db: str | Path = DEFAULT_DB, min_tags: int = 0) -> Games:
 
 
 def build_text(g: Games, i: int, desc_chars: int = 600,
-               skip_tag: str | None = None) -> str:
+               skip_tag: str | None = None, include_name: bool = True) -> str:
     """The variant A input string for game `i`.
 
     Order is deliberate: name, then tags, then genres, then description. With
@@ -108,8 +108,16 @@ def build_text(g: Games, i: int, desc_chars: int = 600,
     the tags, leaving the masked one in makes that score circular for variant A
     in exactly the way it is for variant B. Passing it here removes the leak at
     build time so A and B are scored on the same footing.
+
+    `include_name=False` drops the title. With the name leading the string, the
+    encoder demonstrably matches on title tokens rather than content: Hollow
+    Knight retrieves "Hollow Floor" and "Hollowed", and Cuphead retrieves
+    "Gunheart", "Head Shot" and "SQUAREHEAD". Those are lexical collisions, not
+    similar games. The title is still useful where it is distinctive
+    (Undertale correctly retrieves DELTARUNE and OMORI), so this is a measured
+    trade-off rather than an obvious win -- see embed/variants.md.
     """
-    parts = [g.names[i].strip() or "Untitled"]
+    parts = [g.names[i].strip() or "Untitled"] if include_name else []
     tags = [t for t in g.tags[i] if t != skip_tag] if skip_tag else g.tags[i]
     if tags:
         parts.append("Tags: " + ", ".join(tags[:12]).lower() + ".")

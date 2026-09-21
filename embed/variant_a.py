@@ -325,6 +325,9 @@ def main() -> int:
     ap.add_argument("--holdout", action="store_true",
                     help="drop each game's masked eval tag from its text, so"
                          " tag-prediction is not circular for A either")
+    ap.add_argument("--no-name", action="store_true",
+                    help="omit the game title from the text (it causes lexical"
+                         " title matching; see build_text)")
     args = ap.parse_args()
 
     if not INT8.exists():
@@ -346,7 +349,9 @@ def main() -> int:
         return 0
 
     masked = choose_masked_tags(g) if args.holdout else {}
-    texts = [build_text(g, i, skip_tag=masked.get(i)) for i in range(len(g))]
+    texts = [build_text(g, i, skip_tag=masked.get(i),
+                        include_name=not args.no_name)
+             for i in range(len(g))]
     if masked:
         print(f"holding out 1 tag from the text of {len(masked):,} games")
     sess, tok = make_session(INT8), make_tokenizer()
