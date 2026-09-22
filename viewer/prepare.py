@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 
 from embed.common import load_games, load_vectors
+from ingest.db import connect
 from tiles.format import PointSet, encode
 from tiles.quadtree import build as build_tiles
 
@@ -173,18 +174,44 @@ def main() -> int:
           f"{(PUBLIC / 'manifest.json').stat().st_size / 1e6:.2f} MB")
 
     # ---- metadata, sharded by point-index block --------------------------
+    #
+    # The hover card needs score, release year and price, which are in the
+    # catalog but not in the Games dataclass. Pulled here in one pass, keyed by
+    # appid, then indexed in the same row order as everything else.
+    #
+    # Note the point record's `id` is a ROW INDEX, not an appid: the tile
+    # format carries an opaque u32 and the library never learns what it means.
+    # The appid lives here, which is what the card and the store link use.
+    conn = connect()
+    extra = {int(r["appid"]): (r["review_score"], r["release_date"], r["price"])
+             for r in conn.execute(
+                 "SELECT appid, review_score, release_date, price FROM games")}
+    conn.close()
+
+    def year_of(s: str | None) -> int | None:
+        if not s:
+            return None
+        for tok in str(s).replace(",", " ").split():
+            if len(tok) == 4 and tok.isdigit():
+                return int(tok)
+        return None
+
     mdir = PUBLIC / "meta"
     mdir.mkdir(parents=True, exist_ok=True)
     n_shards = (len(g) + META_SHARD - 1) // META_SHARD
     biggest = 0
     for s in range(n_shards):
         lo_i, hi_i = s * META_SHARD, min((s + 1) * META_SHARD, len(g))
+        block = [int(a) for a in g.appids[lo_i:hi_i]]
         payload = {
             "from": lo_i,
             "names": g.names[lo_i:hi_i],
-            "appids": [int(a) for a in g.appids[lo_i:hi_i]],
+            "appids": block,
             "tags": [t[:5] for t in g.tags[lo_i:hi_i]],
             "reviews": [int(r) for r in g.review_count[lo_i:hi_i]],
+            "scores": [round(extra.get(a, (None,))[0] or 0, 3) for a in block],
+            "years": [year_of(extra.get(a, (None, None))[1]) for a in block],
+            "prices": [extra.get(a, (None, None, None))[2] for a in block],
         }
         f = mdir / f"{s:04d}.json"
         f.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

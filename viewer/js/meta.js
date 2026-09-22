@@ -50,6 +50,9 @@ export class MetaStore {
       appid: s.appids[k],
       tags: s.tags[k] || [],
       reviews: s.reviews[k] || 0,
+      score: s.scores ? s.scores[k] : null,
+      year: s.years ? s.years[k] : null,
+      price: s.prices ? s.prices[k] : null,
     };
   }
 

@@ -162,6 +162,107 @@ export function installCapture(atlas, { canvas, overlay, drawFrame }) {
     return { frames: names.length, target, zoom };
   }
 
+  /**
+   * One composited still: map, labels, and the hover card drawn in.
+   *
+   * The card is a DOM element, so it is not in either canvas. Rather than
+   * screenshot the browser chrome, its content is drawn onto the composite so
+   * the resulting file is exactly the map plus the card and nothing else.
+   */
+  async function snapshot({ name = 'hover.png', scale = 1, card = null } = {}) {
+    // Draw first. requestAnimationFrame is throttled in a background tab,
+    // so the canvas may hold nothing at all by the time a snapshot is
+    // requested -- which composites as a black rectangle.
+    drawFrame();
+    composite.width = Math.round(canvas.width * scale);
+    composite.height = Math.round(canvas.height * scale);
+    cctx.fillStyle = '#0d1117';
+    cctx.fillRect(0, 0, composite.width, composite.height);
+    cctx.drawImage(canvas, 0, 0, composite.width, composite.height);
+    cctx.drawImage(overlay, 0, 0, composite.width, composite.height);
+
+    if (card) {
+      const { x, y, w, img, m, tint } = card;
+      // Height from the content actually drawn, not the DOM element's box:
+      // the two differ and the difference shows as dead space.
+      const ih0 = Math.round(w * 0.466);
+      const h = ih0 + 108;
+      const rr = (a, b, c, d, r) => {
+        cctx.beginPath(); cctx.roundRect(a, b, c, d, r);
+      };
+      cctx.save();
+      cctx.shadowColor = 'rgba(0,0,0,.55)'; cctx.shadowBlur = 24;
+      cctx.shadowOffsetY = 8;
+      cctx.fillStyle = 'rgba(22,27,34,.97)';
+      rr(x, y, w, h, 8); cctx.fill();
+      cctx.restore();
+
+      cctx.save();
+      rr(x, y, w, h, 8); cctx.clip();
+      const ih = ih0;
+      if (img && img !== 'missing') {
+        cctx.drawImage(img, x, y, w, ih);
+      } else {
+        cctx.fillStyle = tint; cctx.fillRect(x, y, w, ih);
+        cctx.fillStyle = 'rgba(255,255,255,.62)';
+        cctx.font = '600 26px ui-sans-serif, system-ui, sans-serif';
+        cctx.textAlign = 'center'; cctx.textBaseline = 'middle';
+        cctx.fillText(m.name.slice(0, 2).toUpperCase(), x + w / 2, y + ih / 2);
+        cctx.textAlign = 'left';
+      }
+      cctx.restore();
+
+      let ty = y + ih + 16;
+      cctx.textBaseline = 'alphabetic';
+      cctx.fillStyle = '#e6edf3';
+      cctx.font = '600 15px ui-sans-serif, system-ui, sans-serif';
+      cctx.fillText(m.name, x + 12, ty); ty += 20;
+
+      cctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+      let tx = x + 12;
+      for (const tag of m.tags.slice(0, 4)) {
+        const tw = cctx.measureText(tag).width + 10;
+        if (tx + tw > x + w - 12) break;
+        cctx.fillStyle = '#21262d';
+        rr(tx, ty - 10, tw, 15, 3); cctx.fill();
+        cctx.fillStyle = '#adbac7';
+        cctx.fillText(tag, tx + 5, ty + 1);
+        tx += tw + 4;
+      }
+      ty += 22;
+
+      const good = m.score >= 0.8, mixed = m.score >= 0.6;
+      cctx.fillStyle = good ? '#7ee787' : mixed ? '#e3b341' : '#ff7b72';
+      cctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+      cctx.fillText(m.scoreWord, x + 12, ty);
+      cctx.fillStyle = '#6e7681';
+      cctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+      const rt = `${m.reviews.toLocaleString()} reviews`;
+      cctx.fillText(rt, x + w - 12 - cctx.measureText(rt).width, ty);
+      ty += 18;
+
+      cctx.fillStyle = '#6e7681';
+      cctx.fillText(String(m.year ?? '—'), x + 12, ty);
+      cctx.fillStyle = '#e6edf3';
+      cctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+      const pr = m.priceText;
+      cctx.fillText(pr, x + w - 12 - cctx.measureText(pr).width, ty);
+      ty += 20;
+
+      cctx.strokeStyle = 'rgba(48,54,61,1)'; cctx.lineWidth = 1;
+      cctx.beginPath(); cctx.moveTo(x + 12, ty - 10);
+      cctx.lineTo(x + w - 12, ty - 10); cctx.stroke();
+      cctx.fillStyle = '#6e7681';
+      cctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+      cctx.fillText('click to open on Steam ↗', x + 12, ty + 3);
+    }
+
+    const blob = await new Promise(res => composite.toBlob(res, 'image/png'));
+    await post(name, blob);
+    return { name, bytes: blob.size, size: [composite.width, composite.height] };
+  }
+
   window.__capture = run;
+  window.__snapshot = snapshot;
   return run;
 }

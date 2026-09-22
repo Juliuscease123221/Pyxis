@@ -8,6 +8,7 @@
 // Metadata and neighbour lists arrive on first hover.
 
 import { decodeKnn } from './binary.js';
+import { HoverCard, ImageCache, STORE_URL } from './card.js';
 import { Hierarchy, PRUNE_PURITY, VISIBLE_MAX, VISIBLE_MIN } from './hierarchy.js';
 import { drawLabels } from './labels.js';
 import { MetaStore } from './meta.js';
@@ -56,6 +57,9 @@ async function boot() {
   };
   const home = { cx: (cx0 + cx1) / 2, cy: (cy0 + cy1) / 2, scale: fitScale() };
   const view = { ...home };
+
+  const images = new ImageCache();
+  const card = new HoverCard($('card'), images);
 
   const tiles = new TileStore({
     bounds: manifest.bounds, maxZoom: manifest.max_zoom, capacity: 200,
@@ -144,9 +148,11 @@ async function boot() {
   }
 
   let focus = -1;
-  async function setFocus(gid) {
+  let cursor = [0, 0];
+
+  async function setFocus(gid, showCard = true) {
     focus = gid;
-    if (gid < 0) { scene.clearHighlight(); renderPanel(null); return; }
+    if (gid < 0) { scene.clearHighlight(); renderPanel(null); card.hide(); return; }
     const knn = await ensureKnn();
     if (focus !== gid) return;
     const nb = Array.from(knn.neighboursOf(gid));
@@ -154,6 +160,26 @@ async function boot() {
     await meta.ensure([gid, ...nb]);
     if (focus !== gid) return;
     renderPanel(gid, nb);
+    if (showCard) showCardFor(gid, nb);
+  }
+
+  function showCardFor(gid, nb) {
+    const m = meta.get(gid);
+    if (!m) return;
+    const slot = scene.indexOfId(gid);
+    const cat = slot === undefined ? null : H.byId.get(scene.points.cat[slot]);
+    const colour = cat ? colourOfCategory(cat) : [0.5, 0.6, 0.7];
+
+    // Screen positions of the haloed neighbours, so the card can flip away
+    // from them rather than covering the thing it is meant to explain.
+    const avoid = [];
+    for (const n of nb) {
+      const k = scene.indexOfId(n);
+      if (k === undefined) continue;
+      const [sx, sy] = project(scene.points.x[k], scene.points.y[k]);
+      avoid.push([sx / dpr, sy / dpr]);
+    }
+    card.show(m, colour, cursor[0], cursor[1], avoid);
   }
 
   function renderPanel(gid, nb) {
@@ -220,6 +246,9 @@ async function boot() {
   // Tuned by eye; see the note in scene.js on why this is a tint and not
   // a hull. Exposed on window.__atlas for adjustment without a rebuild.
   const DENSITY = { size: 62, alpha: 0.013 };
+  const CARD_DEBOUNCE_MS = 80;
+  let cardTimer = null;
+  let hovered = -1;
 
   let labelStats = { drawn: 0, suppressed: 0, unlabelled: 0 };
   let frames = 0, fps = 0, lastT = performance.now();
@@ -299,13 +328,59 @@ async function boot() {
     }
     if (!grid) return;
     const r = canvas.getBoundingClientRect();
+    cursor = [e.clientX, e.clientY];
     const [wx, wy] = unproject((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr);
     const radius = 10 * dpr / view.scale / overlay.width * 2 * aspect();
     const slot = grid.nearest(wx, wy, radius * 2);
     const gid = slot >= 0 ? scene.points.id[slot] : -1;
-    if (gid !== focus) setFocus(gid);
+
+    // A point under the cursor is a link, so it should look like one.
+    canvas.style.cursor = gid >= 0 ? 'pointer' : 'crosshair';
+    hovered = gid;
+
+    if (gid !== focus) {
+      // Halo immediately -- it is already-loaded data and feels instant --
+      // but debounce the card, which fetches a header image. Dragging the
+      // cursor across the map would otherwise fire a request per pixel.
+      setFocus(gid, false);
+      clearTimeout(cardTimer);
+      if (gid >= 0) {
+        cardTimer = setTimeout(() => {
+          if (hovered !== gid || focus !== gid) return;
+          ensureKnn().then(k => showCardFor(gid, Array.from(k.neighboursOf(gid))));
+        }, CARD_DEBOUNCE_MS);
+      } else {
+        card.hide();
+      }
+    } else if (!card.el.hidden) {
+      card.place(cursor[0], cursor[1], []);
+    }
   });
-  canvas.addEventListener('mouseleave', () => setFocus(-1));
+  canvas.addEventListener('mouseleave', () => {
+    clearTimeout(cardTimer);
+    hovered = -1;
+    canvas.style.cursor = 'crosshair';
+    setFocus(-1);
+  });
+
+  // Click opens the Steam page. Middle-click and ctrl/cmd-click are left to
+  // the browser's own link handling by constructing a real anchor rather than
+  // calling window.open, so modifier behaviour matches every other link.
+  function openStore(e) {
+    if (hovered < 0) return;
+    const m = meta.get(hovered);
+    if (!m) return;
+    const a = document.createElement('a');
+    a.href = STORE_URL(m.appid);
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.dispatchEvent(new MouseEvent('click', {
+      ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey,
+      button: e.button, bubbles: false,
+    }));
+  }
+  canvas.addEventListener('click', e => { if (e.button === 0) openStore(e); });
+  canvas.addEventListener('auxclick', e => { if (e.button === 1) openStore(e); });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
     const r = canvas.getBoundingClientRect();
@@ -321,7 +396,10 @@ async function boot() {
     resize(); home.scale = fitScale(); refreshTiles(true);
   });
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { Object.assign(view, home); setFocus(-1); refreshTiles(); }
+    if (e.key === 'Escape') {
+      clearTimeout(cardTimer);
+      Object.assign(view, home); setFocus(-1); refreshTiles();
+    }
   });
 
   await refreshTiles(true);
@@ -376,7 +454,7 @@ async function boot() {
     { canvas, overlay, drawFrame });
 
   window.__atlas = {
-    DENSITY,
+    DENSITY, card, images, showCardFor,
     H, view, home, scene, regl, tiles, meta, project, unproject,
     benchFrames, setFocus, refreshTiles, findByName,
     labelStats: () => labelStats,

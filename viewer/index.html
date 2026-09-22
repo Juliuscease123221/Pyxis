@@ -56,6 +56,44 @@
   #panel .foot { margin-top:9px; padding-top:8px; border-top:1px solid var(--border);
     color:var(--dim); font-size:11px; }
 
+  /* Hover card. Fixed-position so it can flip past the canvas edges, and
+     pointer-events:none so it never eats the click that opens the store. */
+  #card {
+    position:fixed; width:268px; z-index:5; pointer-events:none;
+    background:rgba(22,27,34,.97); border:1px solid var(--border);
+    border-radius:8px; overflow:hidden;
+    box-shadow:0 10px 30px rgba(0,0,0,.55);
+  }
+  #card .shot {
+    height:125px; background-size:cover; background-position:center;
+    display:grid; place-items:center; transition:background-image .12s ease;
+  }
+  /* The placeholder shows until the image arrives, and stays if it 404s --
+     plenty of delisted games have no header any more. */
+  #card .shot .ph {
+    font:600 26px/1 ui-sans-serif,system-ui,sans-serif;
+    color:rgba(255,255,255,.62); letter-spacing:.06em;
+  }
+  #card .shot.loaded .ph { display:none; }
+  #card .body { padding:9px 11px 10px; }
+  #card .title { font-size:14px; font-weight:600; margin-bottom:5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #card .tagrow { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
+  #card .tagrow span {
+    font-size:10.5px; color:#adbac7; background:#21262d;
+    border:1px solid #30363d; border-radius:3px; padding:1px 5px;
+  }
+  #card .meta { display:flex; justify-content:space-between; align-items:baseline;
+    font-size:11.5px; margin-top:2px; }
+  #card .dim { color:var(--dim); }
+  #card .price { color:#e6edf3; font-weight:600; }
+  #card .score { font-weight:600; }
+  #card .score.good { color:#7ee787; }
+  #card .score.mixed { color:#e3b341; }
+  #card .score.poor { color:#ff7b72; }
+  #card .hint { margin-top:8px; padding-top:7px; border-top:1px solid var(--border);
+    font-size:10.5px; color:var(--dim); }
+
   #status { position:absolute; inset:0; display:grid; place-items:center;
     color:var(--muted); font-size:14px; }
   kbd { background:#21262d; border:1px solid var(--border); border-bottom-width:2px;
@@ -68,11 +106,12 @@
   <canvas id="overlay"></canvas>
   <div id="hud"></div>
   <div id="panel" hidden></div>
+  <div id="card" hidden></div>
   <div id="legend">
     <div class="row"><span class="sw strong">Aa</span> confident label</div>
     <div class="row"><span class="sw weak">Aa</span> weak — barely distinguishes the region</div>
     <div class="row"><span class="sw none">—</span> no label — scattered or unnamed</div>
-    <div class="row" style="margin-top:5px">hover a point for its true neighbours ·
+    <div class="row" style="margin-top:5px">hover for neighbours · click to open on Steam ·
       <kbd>esc</kbd> resets</div>
   </div>
   <div id="status">loading…</div>
