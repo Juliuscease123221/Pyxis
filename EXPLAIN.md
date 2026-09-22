@@ -501,3 +501,175 @@ substitution is visible rather than a quiet swap.
 - Fallout 4 lands under "FPS / Shooter"; Dota 2 reaches MOBA only at depth 3.
 - k was chosen from two candidates (8, 12), not searched.
 - Labels are raw tag terms joined by slashes; LLM tidying is cut line 1.
+
+---
+
+## Phase 3 (revised) — what actually shipped, and the correction that got there
+
+The section above records Phase 3 as it happened. Its conclusion — that
+HDBSCAN cannot work on this data — was **wrong in its reasoning**, and the
+correction changed the shipped tree. Both are kept: the sequence is the
+result.
+
+**Shipped:** `tree_leiden_labelled.json` — multi-resolution Leiden over a
+cosine k-NN graph on the full 512-d vectors, nested by membership containment.
+
+### Headline result: PCA silently reversed a decision from the previous phase
+
+This is the most transferable finding in the project so far, and it is worth
+stating on its own.
+
+Variant C is `[0.5·A₃₈₄, 0.5·B₁₂₈]` — a deliberate 50/50 blend of text and tag
+embeddings, chosen in Phase 2 on measured evidence. Both halves carry equal
+*total* variance by construction. But the tag half packs that variance into
+128 dimensions while the text half spreads it over 384, so the densest
+directions in the concatenated space are overwhelmingly tag directions. PCA
+takes directions in variance order:
+
+| retained dims | text loading | tag loading |
+| ---: | ---: | ---: |
+| 50 | 14.2% | **85.8%** |
+| 128 | 12.3% | 87.7% |
+| 256 | 51.0% | 49.0% |
+
+**At the spec's 50 dims, the clustering input is 86% tag** — the α=0.5 blend,
+undone by a preprocessing step that looks like a neutral efficiency measure.
+Nothing errors. Every downstream number stays plausible. The phase that chose
+the blend and the phase that discards it are in different files.
+
+Two further things fall out of the same measurement:
+
+- SPEC.md's "PCA to 50 dims, keep ~90% variance" is **not satisfiable here**:
+  90% needs 208 of 512 dims, and 50 dims gives 54.6%. Those are two
+  constraints, not one, and the data only permits one of them.
+- The general lesson: *a dimensionality reduction is a modelling decision, not
+  a neutral preprocessing step.* Anywhere a pipeline concatenates
+  heterogeneous feature blocks and then reduces, check what survives.
+  `prepare.py::half_mass()` is the two-line diagnostic that caught it.
+
+### The correction: "never cluster on 2D" is not "never reduce"
+
+Phase 3's first pass ran HDBSCAN only on 512-d cosine space and on PCA of it,
+because SPEC.md says to cluster in high-dimensional space and never on 2D
+coordinates. I read that as barring any reduction before clustering. It is
+not: the rule is about *display* coordinates, which are optimised for
+legibility and pack unrelated regions together to fill the plane.
+
+A **separate** UMAP reduction — 5 dims, `metric='cosine'`, `min_dist=0.0`,
+never rendered, never reused as the layout — is a different object, and is the
+standard BERTopic/DataMapPlot pipeline. The two trees SPEC.md insists on
+keeping apart stay apart: this feeds only the cluster tree, and Phase 4 fits
+its own layout.
+
+The diagnosis in the original section ("Steam is a continuum") was correct as
+far as it went. What it missed is that **the absence of density contrast was a
+property of the 512-d space, not of the catalog**:
+
+| space | pairwise CV | 10-NN contrast | games at root |
+| --- | ---: | ---: | ---: |
+| 512-d cosine | 0.106 | 1.60 | 39.8% |
+| PCA-50 | 0.122 | 1.78 | 39.8% |
+| **UMAP 5-d** | **0.386** | **12.83** | **0.0%** |
+
+Condensed-tree forking nodes went 110 → 407. The collapse trade-off that §2
+called inescapable — 63.7% unclustered to hold the biggest node under 30% —
+became 2.3% at the same balance. Forty-plus HDBSCAN configurations had been
+swept in the wrong space; the sweep was thorough and the space was wrong.
+
+### Four methods, judged by reading paths
+
+| | k-means k=12 | UMAP→HDBSCAN | gated k-means | **Leiden** |
+| --- | ---: | ---: | ---: | ---: |
+| nodes / leaves | 1,064 / 908 | 371 / ~310 | 1,028 / 737 | 1,432 / 897 |
+| unclustered | 0% | 3.0% | 0% | **0%** |
+| biggest node | 11.8% | 15.2% | 15.0% | 12.9% |
+| stuck at depth 1 | 0% | **33.6%** | 0% | 0% |
+| parent-term repetition | 20.2% | 26.4% | 29.4% | 38.5% |
+
+- **UMAP→HDBSCAN** gave the cleanest territories but stranded a third of the
+  catalog at depth 1, and put Dota 2 in an 8,550-game "First-Person / Horror /
+  Psychological Horror" node that never subdivided for it. Its children were
+  individually coherent while their parent had no honest name — HDBSCAN's
+  top-level merge order is arbitrary.
+- **Gated bisecting k-means** made splits *earned* (54 refused for lack of
+  structure), but silhouette rises monotonically as k falls, so it chose k=2
+  for 201 of 317 splits and rebuilt the binary cascade — "Platformer →
+  Platformer → Platformer", 37.5% repetition. Picking the widest k within 85%
+  of the best score cut that to 29.4%; top-level placement stayed poor.
+- **Leiden** read best. Community detection asks which games are more connected
+  to each other than to the rest of the graph, rather than where the gaps are —
+  the right question for a continuum.
+
+```
+Europa Universalis IV → Strategy / RTS → Turn-Based Strategy / Historical
+                      → Turn-Based Combat / Hex Grid → Historical / Military
+                      → 4X / Economy / Grand Strategy
+Hollow Knight         → Platformer → 2D Platformer → Metroidvania / Exploration
+                      → Metroidvania / Souls-like / Dark Fantasy
+```
+
+**The repetition metric is misleading here and was overruled.** It counts any
+shared top-3 term between parent and child, so it penalises `Platformer → 2D
+Platformer → Metroidvania` — a legitimate refinement, and exactly what a
+zoomable map wants. It was built to catch "Action → Action → Action Indie",
+where the child adds nothing, and cannot tell the two apart. Leiden scores
+worst on it and reads best.
+
+### Residue buckets: lift, not coverage
+
+A node whose label does not distinguish it is now flagged rather than
+presented as a genre. The motivating case — `tree_k12`'s 5,522-game "Indie /
+Casual / VR", 10% of the catalog — has **94% top-term coverage** but **lift
+1.68** against its siblings, lowest of twelve territories where real genres
+score 5.4 to 60.9.
+
+Coverage cannot catch it; lift can. Threshold 2.0, about the 10th percentile
+of the lift distribution. This is not a stopword list in disguise: nothing
+names a tag, the test is structural, and a ubiquitous tag fails it precisely
+because being everywhere is what makes it uninformative.
+
+In the shipped tree 183 of 1,432 nodes are flagged, covering 22,074 games
+(39%), including two of the sixteen territories. That number is high and is
+not a detector bug — it is the honest report that a large minority of the
+catalog has no confident label. Phase 6 must render those dimmer and
+unlabelled rather than assert a genre over them.
+
+### Phase 6 reframing: why screen-footprint LOD is right for *this* tree
+
+SPEC.md justifies footprint-based LOD by unbalanced depth — "dense regions
+like 2D indie platformers nest 6–7 levels; sparse ones like flight sims stop
+at 2", so depth-keyed thresholds leave half the map unlabelled.
+
+**That argument does not hold for the shipped tree.** Leiden's levels come
+from resolution sweeps, so depth is near-uniform: 83.1% of games land at depth
+5 and 16.7% at depth 4. Nothing nests to 7 and nothing stops at 2.
+
+The justification is therefore different, and stronger:
+
+> **Cluster size varies by three orders of magnitude at the same depth.** At
+> depth 1 the territories run from 276 games (Hidden Object) to 7,239 (Visual
+> Novel) — a 26× spread. Across the whole tree, sizes run 16 to 7,239 with a
+> median of 62.
+
+A depth-keyed rule shows all sixteen depth-1 labels at the same zoom, so the
+276-game territory is either an unreadable speck while Visual Novel is legible,
+or legible while Visual Novel has long since needed subdividing. Screen
+footprint keys the decision to what the viewer can actually see: a label
+appears when its cluster occupies a usable fraction of the viewport, whatever
+depth it sits at. Small territories surface later, large ones subdivide
+sooner, and no level is tuned by hand.
+
+The conclusion in SPEC.md is right; the premise needs replacing with the one
+above. Recorded here so the Phase 6 rationale matches the tree that shipped.
+
+### Known weaknesses
+
+- **Containment purity: median 0.90, and 50% of nodes below 0.9.** Leiden is
+  flat per resolution and the hierarchy is imposed afterwards by majority
+  containment, so 709 fine communities straddle two coarse parents. The tree is
+  an approximate nesting, not a strict one; `purity` is stored per node.
+- 39% of games sit under a residue-flagged node.
+- Dota 2 enters under "FPS / Shooter" and reaches MOBA only at depth 4.
+- Resolutions {0.5, 2, 8, 32, 128} span a wide range but were not tuned; the
+  k-NN graph is k=20, unswept.
+- The HDBSCAN negative result and all four trees stay reproducible in the repo.

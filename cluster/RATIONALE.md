@@ -2,12 +2,24 @@
 
 The differentiating piece of the project. Feeds EXPLAIN.md.
 
-**Shipped:** `tree_k12_labelled.json` — recursive spherical k-means, k=12,
-max_depth 5, labelled with sibling-scoped prevalence×lift over community tags.
+**Shipped:** `tree_leiden_labelled.json` — multi-resolution Leiden over a
+cosine k-NN graph on the full 512-d vectors, nested by membership containment,
+labelled with sibling-scoped prevalence×lift over community tags.
 
-**Headline:** HDBSCAN's condensed tree was built, collapsed, labelled and read —
-and **rejected on the evidence**. It is kept in the repo, reproducible, because
-the comparison is the result.
+**Four methods were built, labelled and read.** All four stay in the repo,
+reproducible, because the comparison is the result. §10 has the head-to-head;
+§1–9 below document the first two attempts in the order they happened, and the
+PCA finding in §1 is the most transferable thing in this file.
+
+> **Correction, recorded because it changed the outcome.** §2–3 conclude that
+> HDBSCAN cannot work here. That conclusion was *wrong in its reasoning*: I had
+> read SPEC.md's "cluster in high-dimensional space, never on 2D" as barring
+> any reduction before clustering, so I only ever ran HDBSCAN on 512-d cosine
+> space and on PCA of it. The rule is about *display* coordinates. A separate
+> UMAP reduction to 5–15 dims, tuned for clustering and never rendered, is the
+> standard BERTopic/DataMapPlot pipeline and is a different object entirely.
+> Applying it moved density contrast from 1.60 to 12.83 and unclustered games
+> from 39.8% to 0.0%. See §10.
 
 ---
 
@@ -249,45 +261,6 @@ that the scope must be a *graded* comparison against siblings, not a binary
 one. Commonness is then handled by the arithmetic: 20.2% repetition, 0 unnamed
 nodes, no vocabulary hand-tuning anywhere.
 
-## 7. Shipped tree
-
-```
-games                 56,129        unclustered            0 (0.0%)
-cluster nodes          1,064        leaves               908
-max depth                  4        mean fan-out        6.78
-largest cluster        11.8%        unnamed nodes          0
-parent-term repetition 20.2%        build time          ~17s
-```
-
-Clusters per depth: 1 / 12 / 144 / 898 / 10.
-Games land at depth 2 (19.5%), depth 3 (79.5%), depth 4 (0.9%).
-
-Effectively **three good levels**, which is SPEC.md's own cut-line preference
-("three good levels beat six bad ones") reached by measurement rather than by
-cutting.
-
-## 8. Known weaknesses
-
-- **Every split is forced.** k-means has no way to say "this region has no
-  internal structure". Some depth-3 leaves are arbitrary slices of a continuum,
-  and their labels are correspondingly thin.
-- **Depth 4 is nearly unused** (0.9% of games). `min_split=120` stops recursion
-  before the depth cap, so the depth-6 ceiling in SPEC.md is never reached.
-  The map gets three zoom levels of real semantics, not six.
-- **Top-level territories are uneven in quality.** "Indie / Casual / VR" (5,522
-  games) is a catch-all, not a genre. It is the residue bucket that any fixed-k
-  partition of a continuum produces.
-- **Misplacements are visible.** Fallout 4 sits under "FPS / Shooter /
-  First-Person" rather than with open-world RPGs, because its tag profile
-  genuinely leans shooter. Dota 2 reaches MOBA only at depth 3.
-- **k=12 was chosen from two candidates** (8 and 12), on top-level label quality
-  and balance. Not a search.
-- **Labels are raw tag terms joined by slashes.** LLM tidying is cut line 1 and
-  was not done; "Souls-like / Difficult / Dark Fantasy" is readable but is not
-  a name a person would write.
-- **No quantitative label-quality metric yet.** That is Phase 8 — with the
-  substitution noted below.
-
 ## 9. Note for Phase 8: NMI against Steam genres will not work
 
 Phase 8 specifies NMI against Steam genres as the label-quality metric. Phase 2
@@ -302,3 +275,173 @@ discriminative power, already shown to separate variants cleanly (57.5% → 84.5
 on top-tag agreement). Report genre NMI alongside it, explicitly as the
 uninformative baseline it is, so the substitution is visible rather than a
 quiet swap. Recorded in EXPLAIN.md.
+
+---
+
+## 10. The rework: a reduction built for clustering
+
+§2–3 rejected HDBSCAN on the grounds that Steam is a continuum. The continuum
+claim is true. The conclusion drawn from it was not, because the diagnosis
+stopped one step short: **512-d cosine space has no density contrast, and that
+is a property of the space, not of the catalog.**
+
+A separate UMAP reduction, at 5–15 dims with `min_dist=0.0` and
+`metric='cosine'`, never rendered and never reused as the display layout, is
+not what SPEC.md's rule forbids. The rule exists because a 2D layout packs
+unrelated regions together to fill the plane, so clustering on it finds
+UMAP's distortions. A 5-d reduction tuned for clustering has no such job.
+
+The two trees SPEC.md insists on keeping separate remain separate: this
+reduction feeds only the cluster tree, and Phase 4 fits its own layout.
+
+### Density contrast, measured
+
+| space | pairwise CV | 10-NN contrast |
+| --- | ---: | ---: |
+| 512-d cosine (rejected in §3) | 0.106 | 1.60 |
+| PCA-50 of it | 0.122 | 1.78 |
+| **UMAP 5-d, cosine, min_dist 0** | **0.386** | **12.83** |
+
+An 8× gain in contrast. HDBSCAN's behaviour changes completely:
+
+| | 512-d / PCA | UMAP 5-d |
+| --- | ---: | ---: |
+| games falling out at root | 39.8% | **0.0%** |
+| condensed-tree nodes | 220 | 814 |
+| forking nodes | 110 | **407** |
+| flat `labels_` noise | 82.4% | 33.5% |
+
+Swept `n_components` {5,10,15} × `n_neighbors` {15,30} × `min_cluster_size`
+{25,50} × `min_samples` {5,10}; every combination landed at 0.0–0.2% root-out
+against 39.8%. `umap_c5_n15` had the most forking structure.
+
+The collapse trade-off from §2 simply disappears. At `spine_ratio` 0.3 the
+512-d tree gave 63.7% unclustered; the UMAP tree gives **2.3%**, with the same
+biggest-node share.
+
+### Four candidates, judged by reading
+
+| | k-means k=12 | UMAP→HDBSCAN | gated k-means on UMAP | **Leiden** |
+| --- | ---: | ---: | ---: | ---: |
+| nodes | 1,064 | 371 | 1,028 | **1,432** |
+| leaves | 908 | ~310 | 737 | 897 |
+| unclustered | 0% | 3.0% | 0% | **0%** |
+| biggest node | 11.8% | 15.2% | 15.0% | 12.9% |
+| max depth | 4 | 5 | 6 | 5 |
+| parent-term repetition | **20.2%** | 26.4% | 29.4% | 38.5% |
+| games stuck at depth 1 | 0% | **33.6%** | 0% | 0% |
+
+Numbers did not decide it; paths did.
+
+- **UMAP→HDBSCAN** produced the cleanest *territories* but left a third of the
+  catalog at depth 1 with no finer label, and put Dota 2 in an 8,550-game node
+  labelled "First-Person / Horror / Psychological Horror" that never
+  subdivided for it. The depth-1 partition is HDBSCAN's merge order, which is
+  arbitrary at the top: its children were individually coherent (Visual Novel,
+  Shooter, Crafting/Survival, Hentai) while their parent had no honest name.
+- **Gated bisecting k-means** fixed coverage and made splits earned (54
+  refused), but silhouette rises monotonically as k falls, so it chose k=2 for
+  201 of 317 splits and rebuilt the binary cascade: paths read "Platformer →
+  Platformer → Platformer", 37.5% repetition. Taking the *widest* k within 85%
+  of the best score cut that to 29.4%, but top-level placement stayed poor —
+  Hollow Knight under "Shoot 'Em Up / Arcade".
+- **Leiden** read best by a clear margin.
+
+```
+Europa Universalis IV  →  Strategy / RTS / Tower Defense
+                       →  Turn-Based Strategy / Turn-Based / Historical
+                       →  Turn-Based Combat / Turn-Based / Hex Grid
+                       →  Historical / Military / War
+                       →  4X / Economy / Grand Strategy
+
+Hollow Knight          →  Platformer / 2D Platformer / Puzzle-Platformer
+                       →  2D Platformer / 2D / Side Scroller
+                       →  Metroidvania / Action-Adventure / Exploration
+                       →  Metroidvania / Souls-like / Dark Fantasy
+
+Dota 2                 →  FPS / Shooter  →  …  →  MOBA / Third Person / PvP
+```
+
+Sixteen top-level territories, all coherent, biggest 12.9%, nothing
+unclustered. Community detection asks "which games are more connected to each
+other than to the rest of the graph" rather than "where are the gaps", which
+is the right question for a continuum — exactly as predicted.
+
+### Why the repetition metric is misleading here
+
+Leiden scores worst on parent-term repetition (38.5%) and reads best. The
+metric counts any shared top-3 term between parent and child, which penalises
+`Platformer → 2D Platformer → Metroidvania` — a legitimate refinement, and the
+thing a zoomable map *wants*. It was built to catch "Action → Action → Action
+Indie", where the child adds nothing, and it cannot tell that apart from
+genuine narrowing. Reported, but not trusted over reading.
+
+### Residue buckets, fixed
+
+A node whose label does not actually distinguish it is now flagged rather than
+presented as a genre. **Lift, not coverage, is the signal.** The motivating
+case, `tree_k12`'s 5,522-game "Indie / Casual / VR", has 94% top-term coverage
+— a coverage test passes it easily — but lift 1.68 against its siblings, the
+lowest of twelve territories:
+
+```
+Action Roguelike / Bullet Hell   lift 60.9      Simulation / Management  lift  5.4
+Visual Novel / Anime             lift 31.6      Indie / Casual / VR      lift  1.68  <- residue
+```
+
+Threshold 2.0 (roughly the 10th percentile of the lift distribution: p10 2.07,
+p25 3.17, p50 5.61), with a weak 25% coverage floor. This is not a stopword
+list: nothing names a tag, the test is structural, and a globally ubiquitous
+tag fails it precisely because being everywhere is what makes it
+uninformative.
+
+In the shipped tree, 183 of 1,432 nodes are flagged, covering 22,074 games
+(39%). Two of the sixteen territories — "Indie / Action / Strategy" (2,397)
+and "Free to Play / VR / Indie" (1,275) — are among them and must render as
+unclustered ground, not as genres.
+
+That 39% is high and is not a bug in the detector: it is the honest report that
+a large minority of the catalog sits in regions whose best available label is
+weak. Phase 6 should render those dimmer and unlabelled rather than assert a
+genre over them.
+
+### k was searched, not picked
+
+`gated_tree.py` searches k at every node (2..12) and reports the distribution;
+the shipped Leiden tree has no k at all — resolution {0.5, 2, 8, 32, 128}
+produces 16 → 45 → 119 → 360 → 892 communities, with community count emerging
+from the graph rather than being imposed.
+
+## 11. Shipped tree
+
+```
+games                 56,129        unclustered            0 (0.0%)
+cluster nodes          1,432        leaves               897
+max depth                  5        mean fan-out        2.67
+largest cluster        12.9%        unnamed nodes          0
+residue nodes    183 (22,074 games) build time         ~35s
+```
+
+Clusters per depth: 1 / 16 / 45 / 119 / 360 / 892.
+Games land at depth 4 (16.7%) and depth 5 (83.1%).
+
+## 12. Known weaknesses
+
+- **Containment purity is only median 0.90, and 50% of nodes fall below 0.9.**
+  Leiden is flat at each resolution; the hierarchy is imposed afterwards by
+  majority containment, so a fine community that straddles two coarse ones is
+  assigned to whichever holds more of it. 709 nodes straddle. The tree is
+  therefore an *approximate* nesting, not a strict one, and `purity` is stored
+  per node so the viewer can see where it is weak. A strictly nested
+  alternative (agglomerating communities level by level) was not built.
+- **39% of games sit under a residue-flagged node.** Honest, but it means a
+  large part of the map has no confident label.
+- **Dota 2 still enters under "FPS / Shooter"** at depth 1 and only reaches
+  MOBA at depth 4. Its tag profile (Free to Play, Multiplayer, Strategy) is
+  genuinely shooter-adjacent in this embedding.
+- **Resolutions {0.5, 2, 8, 32, 128} were chosen to span a wide range**, not
+  tuned. Levels are consequently uneven — 16 → 45 is a 2.8× fan-out, 360 → 892
+  is 2.5×, but depth 1→2 carries far more semantic weight than 4→5.
+- **The k-NN graph is k=20, unswept.** Graph density materially affects
+  modularity clustering and was not explored.
+- **Labels remain raw tag terms joined by slashes.** LLM tidying is cut line 1.

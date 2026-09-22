@@ -91,7 +91,7 @@ def main() -> int:
             ct = CondensedTree(c.condensed_tree_.to_pandas(), n)
             for sr in args.spine_ratio:
                 r = evaluate(ct, n, mcs, args.max_depth, sr)
-                print(f"{mcs:>5}{ms:>4}{sr:>7.1f}"
+                print(f"{mcs:>5}{ms:>4}{sr:>7.2f}"
                       f"{r['unclustered'] * 100:8.1f}%{r['nodes']:>7,}"
                       f"{r['leaves']:>8,}{r['fan']:>6.1f}{r['depth']:>7}"
                       f"{r['biggest'] * 100:8.1f}%{r['median_size']:>8.0f}")

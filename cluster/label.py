@@ -169,6 +169,55 @@ def phrase(terms: list[tuple[str, float]], k: int = 3) -> str:
     return " / ".join(picked) if picked else "unnamed"
 
 
+# A residue bucket is a node whose best available label does not actually
+# distinguish it. The motivating case: a 5,522-game node (10% of the catalog)
+# labelled "Indie / Casual / VR", which is not a genre and which a viewer
+# notices immediately.
+#
+# **Lift, not coverage, is the signal.** That node's top term covers 94% of its
+# members -- a coverage test passes it easily -- but its lift over the sibling
+# average is 1.68, the lowest of the twelve top-level territories by a wide
+# margin. Every genuine territory scores far higher:
+#
+#     Action Roguelike / Bullet Hell    lift 60.9
+#     Visual Novel / Anime / Romance    lift 31.6
+#     Platformer / 2D Platformer        lift 26.3
+#     Simulation / Management           lift  5.4
+#     Indie / Casual / VR               lift  1.68   <- residue
+#
+# Across all nodes the lift distribution runs p10=2.07, p25=3.17, p50=5.61, so
+# a threshold of 2.0 flags roughly the bottom decile. This is not a stopword
+# list in disguise: nothing here names a tag. The test is structural -- "is
+# this label substantially more true here than next door" -- and a globally
+# ubiquitous tag fails it precisely because being everywhere is what makes it
+# uninformative.
+#
+# Coverage is kept only as a weak floor, for a label true of almost nobody.
+RESIDUE_MIN_LIFT = 2.0        # top term must be 2x commoner here than in siblings
+RESIDUE_MIN_COVERAGE = 0.25   # ... and describe at least a quarter of members
+
+
+def label_quality(coverage: dict[str, float], sibling_mean: dict[str, float],
+                  terms: list[tuple[str, float]]) -> dict:
+    """How much of the cluster does its own label actually describe?
+
+    Returns the top term's coverage and its lift over the sibling average, plus
+    an `is_residue` flag. A residue node is one whose best available label is
+    true of a minority of its members -- a catch-all, not a genre.
+    """
+    if not terms:
+        return {"top_coverage": 0.0, "top_lift": 0.0, "is_residue": True}
+    top = terms[0][0]
+    p_c = coverage.get(top, 0.0)
+    p_rest = sibling_mean.get(top, 0.0)
+    lift = p_c / p_rest if p_rest > 1e-9 else float("inf")
+    return {
+        "top_coverage": round(p_c, 4),
+        "top_lift": round(min(lift, 999.0), 3),
+        "is_residue": bool(p_c < RESIDUE_MIN_COVERAGE or lift < RESIDUE_MIN_LIFT),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tree", default="tree_main")
@@ -198,16 +247,44 @@ def main() -> int:
         cache[nid] = term_coverage(g, subtree_members(nodes, nid))
 
     labelled = 0
+    residue = 0
     for parent, sibs in groups.items():
         docs = {s: cache[s] for s in sibs}
         scored = ctfidf_against_siblings(docs, args.top)
+        # mean coverage across the sibling set, for the lift in label_quality
+        totals: dict[str, float] = defaultdict(float)
+        for w in docs.values():
+            for t, v in w.items():
+                totals[t] += v
         for s, terms in scored.items():
+            others = len(sibs) - 1
+            sib_mean = {
+                t: ((totals[t] - docs[s].get(t, 0.0)) / others) if others else 0.0
+                for t, _ in terms
+            }
+            q = label_quality(docs[s], sib_mean, terms)
             nodes[s]["terms"] = [[t, round(v, 6)] for t, v in terms]
             nodes[s]["label"] = phrase(terms, args.phrase_terms)
+            nodes[s].update(q)
             labelled += 1
+            residue += q["is_residue"]
 
     nodes[root]["label"] = "All games"
     nodes[root]["terms"] = []
+    nodes[root]["is_residue"] = False
+
+    print(f"residue nodes: {residue:,}/{labelled:,} "
+          f"({residue / max(labelled, 1) * 100:.1f}%) -- top term lift"
+          f" <{RESIDUE_MIN_LIFT} over siblings, or coverage"
+          f" <{RESIDUE_MIN_COVERAGE:.0%} of members")
+    big_res = sorted(
+        (nodes[n] for n in nodes if nodes[n].get("is_residue")),
+        key=lambda r: -r.get("size", 0))[:5]
+    if big_res:
+        print("  largest residue nodes (render as unclustered, not as a genre):")
+        for r in big_res:
+            print(f"    {r.get('size', 0):>7,}  {r.get('label', '?')[:48]:<48}"
+                  f"  top-term coverage {r.get('top_coverage', 0) * 100:.0f}%")
 
     out = Path(args.out) if args.out else DATA / f"{args.tree}_labelled.json"
     out.write_text(json.dumps(payload), encoding="utf-8")
