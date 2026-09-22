@@ -60,3 +60,25 @@ both satisfy the constraint.
 | --- | --- |
 | `layout.py` | Baseline 2D UMAP; trimmed hulls; containment/purity per depth; writes bbox + centroid per node for Phase 6. |
 | `variants.py` | Supervised and chained layouts, purity lift, side-by-side comparison. |
+
+## Neighbour preservation: stated plainly
+
+Across every layout variant tested, only **10–15%** of a game's 10 nearest
+neighbours in the 512-d embedding are also among its 10 nearest on screen.
+
+| layout | territory arrangement (Spearman) | 10-NN overlap |
+| --- | ---: | ---: |
+| baseline (shipped) | 0.542 | 12.2% |
+| chained | 0.475 | 15.3% |
+| supervised tw=0.01 | 0.452 | 10.4% |
+
+This is inherent to projecting 512 dimensions onto 2, not a defect of any
+particular variant. Every embedding atlas has this property; almost none
+report it.
+
+**The map is a navigational aid, not a metric space.** Screen proximity is
+suggestive, not a similarity claim. Phase 6 accordingly reads hover and
+"similar games" from the cluster tree and the high-dimensional neighbour
+lists, never from screen distance — and surfaces a game's true neighbours
+wherever they land, so the reader can see for themselves where the map is
+locally faithful and where it is not.

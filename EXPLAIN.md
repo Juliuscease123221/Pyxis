@@ -990,3 +990,48 @@ purity), and the renderer should treat those separately.
   be presented with that in mind rather than as a strong geometric claim.
 - The prune threshold has not yet been chosen; it needs the Phase 6 renderer
   to calibrate against.
+
+### Provenance of the two fixes
+
+Both layout fixes were proposed by the project owner, not derived here, and
+the outcomes split:
+
+- **Supervised UMAP** was their first suggestion and is the one that worked on
+  the target metric — it was also the one this analysis then rejected, on a
+  check their own Phase 7 constraint implied.
+- **Chained UMAP (512→5→2)** was their second suggestion, offered with the
+  reasoning that contiguity would follow "by construction" because the display
+  space would be a further reduction of the space the communities were found
+  in. That reasoning is sound and the data disagreed: purity lift 1.1, no
+  better than random. Reducing an already-reduced space compounds distortion
+  rather than inheriting structure.
+
+Recorded because a plausible mechanism predicted the opposite of the
+measurement, which is the case worth keeping.
+
+### Note for Phase 6: make the 10–15% overlap a feature, not a caveat
+
+Every layout tested preserves only 10–15% of each game's high-dimensional
+10-NN on screen. That is inherent to 512-d → 2-d, not a defect of any variant,
+and it means screen proximity is a navigational aid rather than a metric
+statement.
+
+Rather than hide that, **the renderer should show it**. On hover or select,
+highlight the game's true high-dimensional nearest neighbours wherever they
+land, with connecting lines or halos:
+
+- neighbours clustered nearby → the map is locally faithful, and the viewer
+  can see that it is
+- neighbours scattered across three territories → that game genuinely resists
+  placement, which is information about the game, not a rendering failure
+
+This makes the limitation legible instead of buried, and it is the same
+information the accept-and-prune rule uses at territory level, surfaced at the
+level of a single game. It needs the high-dimensional neighbour lists
+precomputed and shipped alongside the tiles — a k-NN list per game, which is
+cheap at k=10.
+
+**The overlap number belongs in the README**, stated plainly. Every embedding
+atlas has this property and almost none report it. The map is a navigational
+aid, not a metric space, and saying so directly is a strength rather than an
+admission.
