@@ -121,8 +121,21 @@ export class HoverCard {
     if (this.appid !== m.appid) {
       this.appid = m.appid;
       const tint = `rgb(${colour.map(c => Math.round(c * 255 * 0.55)).join(',')})`;
+      // background-COLOR, not the `background` shorthand.
+      //
+      // The shorthand resets every background-* longhand, including
+      // background-size and background-position, and an inline style beats the
+      // stylesheet. Writing `background: <tint>` here silently reverted
+      // `background-size: cover` to `auto` and the position to `0% 0%`, so the
+      // header drew at its natural 460px inside a 267px box -- 1.73x, anchored
+      // top-left, right and bottom cropped away. Steam headers are composed
+      // with the title centred, so that crop destroys them.
+      //
+      // The image is now a real <img> at width:100% in a container locked to
+      // 460/215, which cannot crop at all.
       this.el.innerHTML = `
-        <div class="shot" style="background:${tint}">
+        <div class="shot" style="background-color:${tint}">
+          <img class="hdr" alt="" hidden>
           <div class="ph">${esc(m.name.slice(0, 2).toUpperCase())}</div>
         </div>
         <div class="body">
@@ -143,18 +156,16 @@ export class HoverCard {
       // Image arrives asynchronously; the coloured placeholder is what shows
       // until it does, and what stays if it 404s.
       const shot = this.el.querySelector('.shot');
-      const cached = this.images.peek(m.appid);
-      if (cached && cached !== 'missing') {
-        shot.style.backgroundImage = `url("${cached.src}")`;
+      const el = shot.querySelector('img.hdr');
+      const attach = (res) => {
+        if (this.appid !== m.appid || res === 'missing' || !res) return;
+        el.src = res.src;
+        el.hidden = false;
         shot.classList.add('loaded');
-      } else if (cached !== 'missing') {
-        this.images.load(m.appid).then((res) => {
-          if (this.appid !== m.appid) return;      // moved on already
-          if (res === 'missing') return;
-          shot.style.backgroundImage = `url("${res.src}")`;
-          shot.classList.add('loaded');
-        });
-      }
+      };
+      const cached = this.images.peek(m.appid);
+      if (cached && cached !== 'missing') attach(cached);
+      else if (cached !== 'missing') this.images.load(m.appid).then(attach);
     }
 
     this.el.hidden = false;

@@ -16,6 +16,7 @@ import { colourFor, createScene } from './scene.js';
 import { Grid } from './spatial.js';
 import { TileStore, flatten } from './tilestore.js';
 import { installCapture } from './capture.js';
+import { SearchBox } from './searchbox.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -397,6 +398,13 @@ async function boot() {
   });
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
+      // Escape belongs to the search box while it has focus: there it closes
+      // the dropdown or blurs. stopPropagation in the box is not enough --
+      // both handlers are on `window`, and stopPropagation does not stop
+      // other listeners on the *same* element (that needs
+      // stopImmediatePropagation), so whichever registered first still runs.
+      // Checking focus is clearer than depending on registration order.
+      if (document.activeElement === $('search')) return;
       clearTimeout(cardTimer);
       Object.assign(view, home); setFocus(-1); refreshTiles();
     }
@@ -405,6 +413,86 @@ async function boot() {
   await refreshTiles(true);
   if (status) status.remove();
   requestAnimationFrame(frame);
+
+  // ---- fly-to -----------------------------------------------------------
+  //
+  // Zoom is multiplicative, so scale is interpolated geometrically: a linear
+  // ramp crawls at the start and lurches at the end. Position uses the same
+  // eased parameter so the target drifts to centre while being approached
+  // rather than sliding first and then zooming.
+  let flight = null;
+  function flyTo(target, ms = 600) {
+    const from = { cx: view.cx, cy: view.cy, scale: view.scale };
+    const t0 = performance.now();
+    flight = { from, target, t0, ms };
+    return new Promise((done) => {
+      const ease = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(guard);
+        if (ok) {
+          view.scale = target.scale; view.cx = target.cx; view.cy = target.cy;
+        }
+        if (flight?.t0 === t0) flight = null;
+        refreshTiles(true).then(() => done(ok));
+      };
+
+      // requestAnimationFrame is throttled to ~1Hz in a background tab, so a
+      // flight started just before the tab is hidden would stall partway and
+      // never settle -- leaving the camera between two places and any caller
+      // awaiting it hung. The guard snaps to the destination instead. It is a
+      // correctness backstop, not a timing mechanism: when rAF is running
+      // normally the animation always finishes first.
+      const guard = setTimeout(() => finish(true), ms + 250);
+
+      function step(now) {
+        if (settled) return;
+        if (flight?.t0 !== t0) { settled = true; clearTimeout(guard); return done(false); }
+        const t = Math.min(1, (now - t0) / ms);
+        const k = ease(t);
+        view.scale = from.scale * Math.pow(target.scale / from.scale, k);
+        view.cx = from.cx + (target.cx - from.cx) * k;
+        view.cy = from.cy + (target.cy - from.cy) * k;
+        refreshTiles();
+        if (t < 1) requestAnimationFrame(step);
+        else finish(true);
+      }
+      requestAnimationFrame(step);
+    });
+  }
+
+  function scaleToFit(bbox, margin = 1.35) {
+    const w = Math.max(bbox[2] - bbox[0], 1e-6) * margin;
+    const h = Math.max(bbox[3] - bbox[1], 1e-6) * margin;
+    return Math.min(2 * aspect() / w, 2 / h);
+  }
+
+  async function flyToGame(r) {
+    await flyTo({ cx: r.x, cy: r.y, scale: home.scale * 26 });
+    // select after arrival so the halo and card appear on the destination
+    // rather than streaking across the screen during the move
+    await setFocus(r.index);
+    const slot = scene.indexOfId(r.index);
+    if (slot !== undefined) {
+      const [sx, sy] = project(scene.points.x[slot], scene.points.y[slot]);
+      cursor = [sx / dpr, sy / dpr];
+      const knn = await ensureKnn();
+      showCardFor(r.index, Array.from(knn.neighboursOf(r.index)));
+    }
+  }
+
+  async function flyToLabel(r) {
+    const b = r.bbox;
+    await flyTo({ cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2,
+                  scale: scaleToFit(b) });
+  }
+
+  const search = new SearchBox({
+    input: $('search'), list: $('results'), hierarchy: H,
+    onPickGame: flyToGame, onPickLabel: flyToLabel,
+  });
 
   // ---- diagnostics ------------------------------------------------------
   const px4 = new Uint8Array(4);
@@ -457,6 +545,7 @@ async function boot() {
     DENSITY, card, images, showCardFor,
     H, view, home, scene, regl, tiles, meta, project, unproject,
     benchFrames, setFocus, refreshTiles, findByName,
+    search, flyTo, flyToGame, flyToLabel, scaleToFit,
     labelStats: () => labelStats,
     timing: () => ({
       first_paint_ms: +firstPaint.toFixed(1),

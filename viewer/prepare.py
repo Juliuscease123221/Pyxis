@@ -220,6 +220,37 @@ def main() -> int:
     print(f"meta/          {n_shards} shards, {meta_total / 1e6:.2f} MB total, "
           f"{biggest / 1e6:.2f} MB largest  (lazy)")
 
+    # ---- search index ----------------------------------------------------
+    #
+    # A separate lazy asset, fetched when the search box is first focused --
+    # metadata is sharded by point-index block and loaded on hover, so there is
+    # no client-side name list until something asks for one.
+    #
+    # Kept minimal and column-oriented: parallel arrays compress far better
+    # than an array of objects, since each column is homogeneous. The point
+    # index is deliberately absent -- it is the array position, so storing it
+    # would be 56,129 integers of pure redundancy.
+    #
+    # Cluster labels are NOT duplicated here: the manifest already carries
+    # every category with its label and bounding box and is loaded at startup,
+    # so label search runs against that.
+    search = {
+        "n": int(len(g)),
+        "names": g.names,
+        "appids": [int(a) for a in g.appids],
+        "x": [round(float(v), 3) for v in Y[:, 0]],
+        "y": [round(float(v), 3) for v in Y[:, 1]],
+        "reviews": [int(r) for r in g.review_count],
+        "years": [year_of(extra.get(int(a), (None, None))[1]) for a in g.appids],
+    }
+    sp = PUBLIC / "search.json"
+    sp.write_text(json.dumps(search, ensure_ascii=False, separators=(",", ":")),
+                  encoding="utf-8")
+    raw = sp.stat().st_size
+    gzsize = len(gzip.compress(sp.read_bytes(), 6))
+    print(f"search.json    {raw / 1e6:.2f} MB raw, {gzsize / 1e6:.2f} MB gzipped"
+          f"  (lazy, on first focus of the search box)")
+
     # ---- true neighbours --------------------------------------------------
     X, appids, _ = load_vectors(args.variant)
     X = X / np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-9)

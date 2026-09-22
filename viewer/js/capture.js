@@ -185,7 +185,9 @@ export function installCapture(atlas, { canvas, overlay, drawFrame }) {
       const { x, y, w, img, m, tint } = card;
       // Height from the content actually drawn, not the DOM element's box:
       // the two differ and the difference shows as dead space.
-      const ih0 = Math.round(w * 0.466);
+      // exact Steam header aspect, 215/460 -- the same reason the DOM card
+      // locks its container: any approximation crops a centred title
+      const ih0 = Math.round(w * (215 / 460));
       const h = ih0 + 108;
       const rr = (a, b, c, d, r) => {
         cctx.beginPath(); cctx.roundRect(a, b, c, d, r);
