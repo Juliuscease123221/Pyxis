@@ -8,7 +8,7 @@
 // Usage from the console (or a driver script):
 //   await window.__capture({ frames: 90, target: 'Hollow Knight' })
 
-export function installCapture(atlas, { canvas, overlay, meta, drawFrame }) {
+export function installCapture(atlas, { canvas, overlay, drawFrame }) {
   const composite = document.createElement('canvas');
   const cctx = composite.getContext('2d');
 
@@ -94,19 +94,34 @@ export function installCapture(atlas, { canvas, overlay, meta, drawFrame }) {
    */
   async function run({ frames = 80, target = 'Hollow Knight', zoom = 45,
                        scale = 0.55, settle = 2, captionFrom = 0.72 } = {}) {
-    const i = meta.names.indexOf(target);
-    if (i < 0) throw new Error(`no such game: ${target}`);
+    const { view, home, setFocus, neighbours, pathOf, metaOf, worldOf,
+            findByName, refreshTiles } = atlas;
 
-    const { view, home, P, setFocus, neighbours, pathOf } = atlas;
+    const gid = await findByName(target);
+    if (gid < 0) throw new Error(`no such game: ${target}`);
+
+    // The target must be in the loaded tile set before its position is
+    // readable, so the camera is parked on it once to pull those tiles in.
+    const nb = await neighbours(gid);
+    let where = worldOf(gid);
+    if (!where) {
+      const keep = { ...view };
+      view.scale = home.scale * zoom;
+      await refreshTiles(true);
+      where = worldOf(gid);
+      Object.assign(view, keep);
+      await refreshTiles(true);
+    }
+    if (!where) throw new Error('target never appeared in a loaded tile');
+
     const from = { cx: home.cx, cy: home.cy, scale: home.scale };
-    const to = { cx: P.x[i], cy: P.y[i], scale: home.scale * zoom };
+    const to = { cx: where[0], cy: where[1], scale: home.scale * zoom };
     const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
-    const nb = neighbours(i);
     const info = {
-      name: meta.names[i],
-      path: pathOf(i),
-      neighbours: nb.map(n => meta.names[n]),
+      name: metaOf(gid)?.name ?? target,
+      path: pathOf(gid),
+      neighbours: nb.map(n => metaOf(n)?.name ?? '…'),
       alpha: 0,
     };
 
@@ -121,7 +136,8 @@ export function installCapture(atlas, { canvas, overlay, meta, drawFrame }) {
       view.scale = from.scale * Math.pow(to.scale / from.scale, t);
       view.cx = from.cx + (to.cx - from.cx) * t;
       view.cy = from.cy + (to.cy - from.cy) * t;
-      if (f === focusAt) setFocus(i);
+      if (f === focusAt) await setFocus(gid);
+      await refreshTiles();
 
       info.alpha = Math.max(0, Math.min(1, (t - captionFrom) / (1 - captionFrom)));
 

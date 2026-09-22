@@ -1393,3 +1393,113 @@ game, its path and its true neighbours onto the frame directly.
 - **`preserveDrawingBuffer: true`** is enabled for the whole app so the capture
   path can read frames back. It costs some throughput on every frame to serve a
   feature used once.
+
+---
+
+## Phase 6 (continued) — wiring the viewer to the tile engine
+
+The renderer originally loaded all 56,129 points as one 1.01 MB blob plus a
+5.62 MB `meta.json`, both eagerly. That left `tiles/` — tested, benchmarked,
+shipping as its own project — with **no consumer**, which weakened both
+projects at once: the engine was undemonstrated and the app's scaling story was
+theoretical.
+
+### What moved
+
+| | before | after |
+| --- | --- | --- |
+| points | one 1.01 MB blob, all 56,129 | quadtree tiles, streamed per viewport |
+| metadata | 5.62 MB eager | 14 shards of ~0.43 MB, on first hover |
+| neighbours | 2.25 MB eager | on first hover |
+| manifest | 0.49 MB | 0.49 MB (142 KB gzipped) |
+
+Metadata is sharded by **point-index block**, not by tile. A point appears in
+several tiles — that redundancy is what makes tiles independently renderable —
+so tile-keyed metadata would ship the same record once per zoom level.
+
+### Cold load, measured against a throttled connection
+
+Localhost numbers are not a claim about anything: the transfer is instant and
+"time to first paint" collapses to parse time. `viewer/server.py` takes a
+bandwidth cap so the same measurement can be taken at a stated speed.
+
+At **5 Mbps**, everything needed for the first frame arrived at **1.83 s**,
+252 KB transferred (app code 56 KB, manifest 142 KB gzipped, one tile 53 KB).
+
+Comparing eager payloads like-for-like, both gzipped:
+
+```
+OLD  blob + meta + knn    3,614 KB gzipped   5.8 s at 5 Mbps
+NEW  manifest + z0 tile     195 KB gzipped   0.3 s at 5 Mbps
+                                             18.5x smaller
+```
+
+The dev server now gzips JSON and sets `Content-Encoding` on the pre-gzipped
+tiles, because without that the comparison is against an artificially large
+manifest — JSON compresses 3.4× here, which is the difference between a figure
+that reflects deployment and one that reflects this dev server.
+
+### Streaming behaviour
+
+Measured across a zoom sweep, 19 tile requests / 278 KB / 42 cache hits / 0
+evictions:
+
+| zoom | level | tiles | points shown |
+| ---: | ---: | ---: | ---: |
+| 1× | z0 | 1 | 4,000 |
+| 2.5× | z1 | 5 | 4,800 |
+| 6× | z2 | 9 | 4,800 |
+| 16× | z4 | 15 | 3,832 |
+| 45× | z5 | 19 | 827 |
+
+Three decisions that matter for it feeling right rather than merely correct:
+
+- **Render the level, not the union.** Points repeat across zoom levels, so
+  drawing every cached tile would draw the same point several times.
+- **Keep showing what you have.** Cached tiles render immediately and the new
+  level replaces them when it arrives, so a zoom never flashes empty.
+- **Debounce pans, not zooms.** A drag emits a continuous stream of viewport
+  changes and loading mid-drag stutters; a zoom step is discrete and the user
+  is asking for new detail.
+
+### Visual pass
+
+**Label term count scales with footprint.** One term below 1.4% of the screen,
+two below 5.5%, three above. Every label carrying three slash-separated terms
+was unreadable at a glance and visually uniform, so nothing stood out. The
+thresholds are in the same units as the LOD window, so a label gains terms over
+the same interval it fades in.
+
+**Labels are tinted with their territory's colour.** Previously they floated
+free of the blobs they named. This also gives confidence a second channel:
+weak labels are dimmer *and* italic, rather than relying on opacity alone.
+
+**The view fits the data's core extent** (0.5th–99.5th percentile) on load
+rather than its raw bounds, so the catalog fills the frame instead of sitting
+as an island in black. Same outlier problem that inflated the category boxes,
+one level up.
+
+**A density tint underlies the points.** The same buffers drawn once more at
+62 px with alpha 0.013 and additive blending, so overlapping members of a
+territory accumulate into a soft coloured region. This is deliberately a tint
+and not a hull: depth-1 purity is 0.52, so a drawn boundary would assert
+structure the data does not support. Tuned by eye — the first attempt at
+alpha 0.085 produced isolated halos per point, and 0.030 at 95 px saturated to
+white where regions overlap.
+
+**Tile budget raised from 1,200 to 4,000 points.** At 1,200 the opening view
+read as speckle rather than territories, and a z0 tile is 53 KB either way.
+
+### Known weaknesses
+
+- **Label density is still high at mid-zoom.** The greedy collision keeps the
+  largest, so the result is readable, but the suppression count says the
+  footprint window is generous.
+- **`knn.bin` is 2.25 MB fetched whole on first hover.** It should be sharded
+  the same way metadata is; it is deferred off the critical path but is still a
+  noticeable pause on a slow connection the first time a point is hovered.
+- **The manifest at 142 KB gzipped now dominates cold load.** Most of it is
+  per-category term lists and bounding boxes for all 1,117 nodes, of which only
+  the top two levels are needed to draw the first frame.
+- **`preserveDrawingBuffer: true`** stays enabled for the capture path, costing
+  some throughput on every frame for a feature used once.
