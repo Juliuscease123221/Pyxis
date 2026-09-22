@@ -829,3 +829,164 @@ UMAP would pay a cost everywhere to fix a few places.
 
 No fix has been applied yet; the numbers above are the baseline against which
 any fix must be judged.
+
+### Phase 7 constrains which layout fix is allowed
+
+SPEC.md offers three fixes for hierarchy inconsistency and presents them as
+increasing effort: accept-and-prune, recursive layout, constrained UMAP. The
+ordering implies recursive layout is the middle option — more work than
+pruning, less than constraining. On effort, that is right. On consequences, it
+is the most destructive of the three, and the reason is in a different phase.
+
+**Recursive layout breaks Phase 7.** Frontier recommendations are defined as
+territory *adjacent to* the user's hot zones: a cluster near their
+playtime-weighted centroid, surfaced because it is near. The explainability
+SPEC.md claims for the feature — "the user can see why, and see what else is
+nearby" — is entirely a property of the geometry.
+
+Recursive layout allocates each top-level territory an arbitrary region and
+runs a separate UMAP inside it. The distance between two territories then
+reflects the packing algorithm, not the data. SPEC.md states the consequence
+in one line ("cross-region distances become meaningless") without connecting
+it to the phase that depends on them. That is the connection: recursive layout
+would fix purity and silently remove the basis of the personal layer, and
+nothing in Phase 4's acceptance check would notice, because containment and
+purity would both *improve*.
+
+So the constraint is recorded before the choice is made, not after:
+
+> **Any layout fix must keep cross-territory distance data-driven.**
+> Recursive layout is available and implemented-shaped, but it is a last
+> resort, and if it ever ships, EXPLAIN.md must state plainly that Phase 7's
+> adjacency scoring is no longer meaningful and the frontier feature is
+> reduced to within-territory recommendations.
+
+Both fixes tried below satisfy the constraint. Supervised UMAP adds an
+attraction term toward territory labels while the layout still optimises the
+real neighbour graph; chained UMAP is an ordinary unsupervised reduction of a
+space that itself came from the data. Neither imposes a region on anything.
+
+### Purity lift: normalising away the size bias
+
+Raw purity is size-correlated (0.169 under 50 games, 0.443 over 1,000), so
+cross-level comparison is meaningless without normalisation. `purity_lift =
+observed / expected`, where expected comes from a **size-matched random
+baseline** — clusters of the same size drawn at random from the catalog, hulls
+computed identically. Measured empirically rather than derived, because hull
+geometry matters. Same lift construction as the label scoring.
+
+### Three layouts, measured side by side
+
+| layout | depth-1 purity | lift d1 / d2 / d3 | containment d1 |
+| --- | ---: | ---: | ---: |
+| baseline (512→2) | 0.518 | 8.0 / 48.0 / 72.5 | 0.851 |
+| chained (512→5→2) | **0.130** | 1.1 / 4.5 / 23.4 | 0.870 |
+| supervised tw=0.01 | **1.000** | 21.7 / 125.7 / 150.1 | 0.867 |
+| supervised tw=0.1 | 1.000 | 21.7 / 125.8 / 146.1 | 0.887 |
+| supervised tw=0.5 | 1.000 | 21.6 / 125.6 / 143.5 | 0.844 |
+
+**Chained failed outright** — purity lift 1.1 at depth 1 is indistinguishable
+from random, and every territory collapsed to ~0.10. Reducing an already-
+reduced space compounds distortion rather than inheriting its structure. This
+was the variant I expected to win by construction and it lost worst, which is
+the argument for measuring rather than reasoning about it.
+
+**Supervised worked spectacularly** on the stated metric: every depth-1
+territory reaches purity 1.000, including the shattered ones (RPG/JRPG 0.08 →
+1.00, Puzzle 0.13 → 1.00, Shooter/FPS 0.38 → 1.00), with lift roughly doubled
+at every depth.
+
+### Which is exactly when to be suspicious
+
+Purity and containment both reward separation. A layout that shattered the
+catalog into 27 disjoint blobs would score perfectly on both and be useless —
+and that is what recursive layout, the fix ruled out for breaking Phase 7,
+would produce. Purity 1.000 is the number that should trigger a check, not end
+the search.
+
+`layout/fidelity.py` measures the two things that would actually break:
+
+| layout | territory arrangement (Spearman, Phase 7) | 10-NN overlap (Phase 6) |
+| --- | ---: | ---: |
+| **baseline** | **0.542** | **12.2%** |
+| chained | 0.475 | 15.3% |
+| supervised tw=0.01 | 0.452 | 10.4% |
+| supervised tw=0.1 | 0.421 | 10.3% |
+| supervised tw=0.3 | 0.318 | 10.6% |
+| supervised tw=0.5 | 0.320 | 10.3% |
+
+Supervision has a **floor effect**: purity saturates at 1.000 even at
+`target_weight=0.01`, the lowest value tested, while arrangement fidelity
+still falls 0.542 → 0.452. The trade cannot be tuned away, only chosen.
+
+And the cost is visible, not just numeric. Each territory's nearest
+neighbouring territory:
+
+```
+                        baseline                supervised tw=0.01
+RTS               ->    Tower Defense           Action Roguelike
+Platformer        ->    RPG                     Education
+Horror            ->    Online Co-Op            Clicker
+Action Roguelike  ->    Shoot 'Em Up            Survival
+Visual Novel      ->    Sexual Content          Sexual Content
+```
+
+The baseline's adjacencies are the ones a person would draw. Supervised
+produces *Platformer next to Education* and *Horror next to Clicker* — which
+is precisely the Phase 7 failure the constraint above was written to prevent,
+arriving through a gentler mechanism than recursive layout.
+
+### Decision: keep the baseline, prune rather than force
+
+**Supervised UMAP is rejected despite winning the metric it was tried for.**
+It buys purity with the currency Phase 7 spends.
+
+The deeper reason is that the low-purity territories are *not places*. Puzzle,
+RPG and Shooter are cross-cutting attributes — a puzzle game can live in a
+dozen neighbourhoods — so forcing them into one blob does not reveal
+structure, it asserts structure that is not there. The baseline layout is
+telling the truth about them.
+
+Evidence that this is the right reading: the fragmented territories'
+**children** are markedly more contiguous than the territories themselves,
+while cohesive territories' children are not.
+
+```
+territory            size   purity   mean child purity
+RPG                 3,272     0.08            0.30      <- children 4x better
+Puzzle              3,844     0.13            0.26
+Indie               2,433     0.12            0.24
+Platformer          5,630     0.88            0.33      <- parent already fine
+Visual Novel        4,505     0.93            0.40
+```
+
+RPG is not a region; its sub-genres are. So SPEC.md's fix #1 —
+accept-and-prune — applies **per territory** rather than per level: a
+territory whose purity falls below threshold is not drawn as one labelled
+region, and its children are surfaced in its place. Cheapest of the three
+fixes, and here also the most honest.
+
+This composes with the confidence tiers from Phase 3: a territory can be
+low-confidence in *label* (weak lift) or low-confidence in *place* (low
+purity), and the renderer should treat those separately.
+
+### What was rejected, and why
+
+| fix | status | reason |
+| --- | --- | --- |
+| chained UMAP | rejected | purity lift 1.1 — no better than random |
+| supervised UMAP | rejected | buys purity by degrading territory adjacency (0.542 → 0.452) and neighbour preservation (12.2% → 10.4%); breaks Phase 7's basis |
+| recursive layout | not attempted | would destroy cross-territory adjacency outright |
+| **accept-and-prune, per territory** | **chosen** | keeps adjacency data-driven; declines to assert that cross-cutting attributes are places |
+
+### Honest caveats
+
+- **Neighbour overlap is low for every layout** (10–15%). That is inherent to
+  512-d → 2-d, not a defect of any variant, but it does mean Phase 6's hover
+  behaviour should read from the tree and the high-dimensional neighbours,
+  not from screen proximity.
+- **Baseline territory Spearman is 0.542**, which is moderate, not good. Phase
+  7 adjacency is meaningful but not precise, and the frontier scoring should
+  be presented with that in mind rather than as a strong geometric claim.
+- The prune threshold has not yet been chosen; it needs the Phase 6 renderer
+  to calibrate against.
