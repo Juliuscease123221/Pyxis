@@ -41,7 +41,7 @@ import argparse
 import json
 import math
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from embed.common import load_games
@@ -197,25 +197,88 @@ RESIDUE_MIN_LIFT = 2.0        # top term must be 2x commoner here than in siblin
 RESIDUE_MIN_COVERAGE = 0.25   # ... and describe at least a quarter of members
 
 
+# Confidence tiers, not a binary. Flagging a node "residue" and dropping its
+# label leaves grey continents on the map -- two of sixteen top-level
+# territories in one earlier tree -- which reads as unfinished rather than as
+# honest. A viewer is better served by "this region is loosely Casual games,
+# shown faintly" than by nothing at all.
+#
+#   strong   lift >= 4     confident genre; render normally
+#   normal   lift >= 2     render normally
+#   weak     lift <  2     render dimmed/italic: the term is true of the region
+#                          but barely distinguishes it from its neighbours
+#   none     coverage < 25%  even the top term describes almost nobody; no label
+LIFT_STRONG = 4.0
+LIFT_NORMAL = 2.0
+MIN_COVERAGE_FOR_ANY_LABEL = 0.25
+
+# Retained for the older binary reporting path.
+RESIDUE_MIN_LIFT = LIFT_NORMAL
+RESIDUE_MIN_COVERAGE = MIN_COVERAGE_FOR_ANY_LABEL
+
+
 def label_quality(coverage: dict[str, float], sibling_mean: dict[str, float],
                   terms: list[tuple[str, float]]) -> dict:
     """How much of the cluster does its own label actually describe?
 
-    Returns the top term's coverage and its lift over the sibling average, plus
-    an `is_residue` flag. A residue node is one whose best available label is
-    true of a minority of its members -- a catch-all, not a genre.
+    Returns the top term's coverage, its lift over the sibling average, and a
+    confidence tier for the renderer. `is_residue` is kept as the coarse
+    boolean (tier below `normal`) so existing reports still work.
     """
     if not terms:
-        return {"top_coverage": 0.0, "top_lift": 0.0, "is_residue": True}
+        return {"top_coverage": 0.0, "top_lift": 0.0,
+                "confidence": "none", "is_residue": True}
     top = terms[0][0]
     p_c = coverage.get(top, 0.0)
     p_rest = sibling_mean.get(top, 0.0)
     lift = p_c / p_rest if p_rest > 1e-9 else float("inf")
+
+    if p_c < MIN_COVERAGE_FOR_ANY_LABEL:
+        tier = "none"
+    elif lift >= LIFT_STRONG:
+        tier = "strong"
+    elif lift >= LIFT_NORMAL:
+        tier = "normal"
+    else:
+        tier = "weak"
+
     return {
         "top_coverage": round(p_c, 4),
         "top_lift": round(min(lift, 999.0), 3),
-        "is_residue": bool(p_c < RESIDUE_MIN_COVERAGE or lift < RESIDUE_MIN_LIFT),
+        "confidence": tier,
+        "is_residue": tier in ("weak", "none"),
     }
+
+
+def path_relation(child_terms, parent_terms) -> str:
+    """Classify a parent->child label transition.
+
+    The earlier metric counted *any* shared top-3 term, which cannot tell
+    `Platformer -> 2D Platformer -> Metroidvania` (legitimate narrowing, and
+    exactly what a zoomable map wants) from `Action -> Action -> Action Indie`
+    (the child restating the parent). Leiden scored worst on it and read best,
+    which is a sign the metric was wrong rather than the tree.
+
+    Three outcomes, keyed on the *top* term only:
+
+      repeat      child's top term == parent's top term. Degenerate: the child
+                  adds nothing. This is the number to minimise.
+      refinement  child's top term differs but appears lower in the parent's
+                  ranking -- the child has narrowed onto one of the parent's
+                  secondary characteristics. Desirable.
+      novel       child's top term does not appear in the parent's terms at
+                  all. Also fine, and common where a territory splits into
+                  genuinely different sub-genres.
+    """
+    if not child_terms or not parent_terms:
+        return "novel"
+    c_top = child_terms[0][0]
+    p_top = parent_terms[0][0]
+    if c_top == p_top:
+        return "repeat"
+    if c_top in {t for t, _ in parent_terms}:
+        return "refinement"
+    return "novel"
 
 
 def main() -> int:
@@ -271,45 +334,63 @@ def main() -> int:
 
     nodes[root]["label"] = "All games"
     nodes[root]["terms"] = []
+    nodes[root]["confidence"] = "strong"
     nodes[root]["is_residue"] = False
-
-    print(f"residue nodes: {residue:,}/{labelled:,} "
-          f"({residue / max(labelled, 1) * 100:.1f}%) -- top term lift"
-          f" <{RESIDUE_MIN_LIFT} over siblings, or coverage"
-          f" <{RESIDUE_MIN_COVERAGE:.0%} of members")
-    big_res = sorted(
-        (nodes[n] for n in nodes if nodes[n].get("is_residue")),
-        key=lambda r: -r.get("size", 0))[:5]
-    if big_res:
-        print("  largest residue nodes (render as unclustered, not as a genre):")
-        for r in big_res:
-            print(f"    {r.get('size', 0):>7,}  {r.get('label', '?')[:48]:<48}"
-                  f"  top-term coverage {r.get('top_coverage', 0) * 100:.0f}%")
 
     out = Path(args.out) if args.out else DATA / f"{args.tree}_labelled.json"
     out.write_text(json.dumps(payload), encoding="utf-8")
     print(f"labelled {labelled:,} nodes -> {out}")
 
-    # how often does a child repeat a term from its parent's label?
-    repeats = 0
-    checked = 0
+    # ---- confidence tiers -------------------------------------------------
+    tiers = Counter(nodes[n].get("confidence", "none")
+                    for n in nodes if n != root)
+    games = Counter()
+    for n in nodes:
+        if n == root:
+            continue
+        games[nodes[n].get("confidence", "none")] += len(nodes[n]["members"])
+    total_games = sum(games.values()) or 1
+
+    print("\nLABEL CONFIDENCE (lift of the top term over siblings)")
+    for tier, desc in (("strong", "lift >=4, render normally"),
+                       ("normal", "lift >=2, render normally"),
+                       ("weak", "lift <2, render dimmed"),
+                       ("none", "coverage <25%, no label")):
+        print(f"  {tier:<7} {tiers.get(tier, 0):>5,} nodes"
+              f"  {games.get(tier, 0):>7,} games"
+              f"  ({games.get(tier, 0) / total_games * 100:5.1f}%)   {desc}")
+
+    weakest = sorted(
+        (nodes[n] for n in nodes
+         if n != root and nodes[n].get("confidence") in ("weak", "none")),
+        key=lambda r: -r.get("size", 0))[:5]
+    if weakest:
+        print("  largest dimmed nodes:")
+        for r in weakest:
+            print(f"    {r.get('size', 0):>7,}  {r.get('label', '?')[:44]:<44}"
+                  f"  lift {r.get('top_lift', 0):6.2f}  cov"
+                  f" {r.get('top_coverage', 0) * 100:3.0f}%")
+
+    # ---- parent -> child label transitions --------------------------------
+    rel = Counter()
     for nid, rec in nodes.items():
-        p = rec["parent"]
-        if p is None or "label" not in rec:
+        par = rec.get("parent")
+        if par is None:
             continue
-        pl = nodes[str(p)].get("label", "")
-        if not pl or pl == "All games":
+        prec = nodes[str(par)]
+        if not prec.get("terms"):
             continue
-        checked += 1
-        child_terms = {t for t, _ in rec.get("terms", [])[:3]}
-        parent_terms = {t for t, _ in nodes[str(p)].get("terms", [])[:3]}
-        if child_terms & parent_terms:
-            repeats += 1
-    if checked:
-        print(f"parent-term repetition: {repeats:,}/{checked:,} "
-              f"({repeats / checked * 100:.1f}%) of children reuse a top-3 term "
-              f"from their parent")
-        print("  (high values mean the sibling scoping is not working)")
+        rel[path_relation(rec.get("terms", []), prec.get("terms", []))] += 1
+    tot = sum(rel.values()) or 1
+
+    print("\nPARENT -> CHILD LABEL TRANSITIONS (top term only)")
+    print(f"  repeat     {rel['repeat']:>5,}  ({rel['repeat'] / tot * 100:5.1f}%)"
+          f"   child restates the parent -- degenerate, minimise this")
+    print(f"  refinement {rel['refinement']:>5,}"
+          f"  ({rel['refinement'] / tot * 100:5.1f}%)"
+          f"   child narrows onto a secondary parent term -- good")
+    print(f"  novel      {rel['novel']:>5,}  ({rel['novel'] / tot * 100:5.1f}%)"
+          f"   child introduces a new term -- good")
     return 0
 
 

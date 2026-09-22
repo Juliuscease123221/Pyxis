@@ -673,3 +673,159 @@ above. Recorded here so the Phase 6 rationale matches the tree that shipped.
 - Resolutions {0.5, 2, 8, 32, 128} span a wide range but were not tuned; the
   k-NN graph is k=20, unswept.
 - The HDBSCAN negative result and all four trees stay reproducible in the repo.
+
+---
+
+## Phase 3 (final) — recursive Leiden, exact nesting
+
+**Shipped:** `tree_rleiden_labelled.json` — recursive Leiden, purity 1.000 by
+construction.
+
+Multi-resolution Leiden inferred parenthood by majority containment, so
+nothing forced a fine community to sit inside one coarse community: 709 of
+them straddled two, median containment purity 0.90 with half the nodes below
+it. That is fatal rather than untidy — Phase 4's whole job is keeping children
+inside their parent's region, and a child whose members belong to two parents
+gets torn across two territories, which reads as a rendering bug.
+
+**Recursive Leiden removes the failure mode instead of measuring it.** Each
+community is re-clustered on a k-NN graph rebuilt from *only its own members*,
+so a child is computed from its parent's membership and cannot straddle. The
+subgraph rebuild also changes the question at depth: "nearest" becomes nearest
+*among strategy games* rather than nearest in the whole catalog.
+
+| | multi-resolution | **recursive** |
+| --- | ---: | ---: |
+| containment purity | 0.90 median, 50% below 0.9 | **1.000, exact** |
+| nodes / leaves | 1,432 / 897 | 1,117 / 874 |
+| biggest node | 12.9% | **10.0%** |
+| top-level territories | 16 | 27 |
+| top-term repeat | 9.9% | **2.8%** |
+| build time | ~35s | 39s |
+
+Recursive also reads better: Terraria, Valheim, Rust and Fallout 4 all land
+under *Survival / Crafting / Open World Survival Craft*, where the
+multi-resolution tree scattered them.
+
+### The repetition metric was wrong, and is now fixed rather than overruled
+
+The previous section overruled a 38.5% "repetition" score on the grounds that
+it penalised legitimate refinement. That was the right call for the wrong
+reason — the honest move is to fix the metric, not to argue past it.
+
+The old metric counted **any** shared top-3 term between parent and child, so
+it could not distinguish `Platformer → 2D Platformer → Metroidvania` (the
+child narrowing, which is what a zoomable map wants) from `Action → Action →
+Action Indie` (the child restating the parent). Keyed on the **top term only**,
+with three outcomes:
+
+| | multi-resolution | recursive |
+| --- | ---: | ---: |
+| **repeat** — child restates parent (degenerate) | 9.9% | **2.8%** |
+| refinement — child narrows onto a secondary parent term | 36.0% | 36.4% |
+| novel — child introduces a new term | 54.1% | 60.8% |
+
+Leiden's alarming 38.5% was almost entirely refinement. The fixed metric
+defends the tree on its own, and no override is needed.
+
+### Confidence tiers, not a binary residue flag
+
+Dropping a label wherever lift < 2.0 left grey continents — two of sixteen
+territories in one tree — which reads as unfinished rather than as honest. A
+viewer is better served by "this region is loosely Casual games, shown
+faintly" than by nothing.
+
+| tier | rule | nodes | games | renderer |
+| --- | --- | ---: | ---: | --- |
+| strong | lift ≥ 4 | 645 | 54.8% | normal |
+| normal | lift ≥ 2 | 271 | 26.0% | normal |
+| weak | lift < 2 | 114 | 11.3% | dimmed / italic |
+| none | coverage < 25% | 86 | 7.9% | no label |
+
+**80.8% of games sit under a normally-labelled node**, 11.3% under a dimmed
+one, and only 7.9% under a node with no label at all — against "39% residue"
+under the binary rule. Largest dimmed node: "Indie / Action / Simulation",
+2,433 games, lift 1.39.
+
+---
+
+## Phase 4 — layout, and hierarchy consistency measured before any fix
+
+The display UMAP is a **separate object** from the clustering reduction: 2
+dims, `min_dist=0.05`, `n_neighbors=25`, rendered; the clustering one is 5
+dims, `min_dist=0.0`, never rendered. Parallel branches off the same vectors,
+as the architecture requires.
+
+**One deviation:** SPEC.md says to lay out from the 50-dim PCA. Phase 3
+showed PCA-50 of variant C is 85.8% tag loading, so laying out from it would
+put the map in a different space from the tree. This runs on the full 512-d
+vectors with cosine, matching both.
+
+### Measured, before attempting any fix
+
+Regions are **trimmed** convex hulls (central 95% by distance to centroid);
+an untrimmed hull is hostage to its worst outlier. Note that "fraction of
+members inside the cluster's own hull" is 1.0 by construction and measures
+nothing, so the informative pair is:
+
+- **containment** — fraction of a node's members inside its *parent's* region
+- **purity** — of catalog points inside a node's region, the fraction that
+  actually belong to it
+
+| depth | nodes | containment mean | median | <0.9 | purity mean | median | <0.5 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 27 | 0.851 | 0.999 | 22% | 0.518 | 0.528 | 44% |
+| 2 | 224 | 0.929 | 0.976 | 15% | 0.305 | 0.268 | 80% |
+| 3 | 676 | 0.948 | 0.957 | 12% | 0.182 | 0.137 | 95% |
+| 4 | 189 | 0.949 | 0.951 | 13% | 0.116 | 0.086 | 98% |
+
+**Containment is good and does not degrade with depth** — mean 0.85–0.95,
+median 0.95–0.999, with only 12–22% of nodes below 0.9. Children largely stay
+inside their parents. That is the number SPEC.md expected to be worst at
+depth, and it is not.
+
+**Purity is poor and collapses with depth** — 0.52 at depth 1 down to 0.12 at
+depth 4, with 95–98% of deep nodes below 0.5.
+
+### Part of the purity number is a metric artifact, and part is real
+
+Purity is strongly size-correlated, which it must be: a 40-game cluster's hull
+sitting in a dense region of a 56,129-point map contains many non-members no
+matter how good the layout is.
+
+| cluster size | mean purity |
+| --- | ---: |
+| < 50 | 0.169 |
+| 50–100 | 0.187 |
+| 100–300 | 0.222 |
+| 300–1,000 | 0.349 |
+| 1,000+ | 0.443 |
+
+But size does not explain the variance *within* a depth level. The depth-1
+territories are all of comparable size and differ wildly:
+
+```
+Visual Novel / Interactive Fiction   4,505   purity 0.93
+Action Roguelike / Action RPG        3,330   purity 0.91
+Platformer / 2D Platformer           5,630   purity 0.88
+Horror / Walking Simulator           4,398   purity 0.79
+Management / Simulation              3,353   purity 0.69
+Shooter / FPS / Violent              4,411   purity 0.38
+Puzzle / Relaxing / Logic            3,844   purity 0.13
+RPG / Turn-Based Combat / JRPG       3,272   purity 0.08
+```
+
+So this is **not** uniformly bad layout. Most territories are cohesive; a few
+are genuinely shattered across the map. *RPG / Turn-Based Combat / JRPG* at
+0.08 and *Puzzle* at 0.13 are coherent in 512-d and fragmented in 2D — UMAP
+has scattered them, which is exactly the distortion Phase 4's fixes exist to
+address.
+
+That also says which fix to reach for: the problem is concentrated in a
+handful of top-level territories rather than spread evenly, so the recursive
+layout (lay out territories as points, allocate regions, run UMAP within each,
+affine-transform into place) targets it directly, where a global constrained
+UMAP would pay a cost everywhere to fix a few places.
+
+No fix has been applied yet; the numbers above are the baseline against which
+any fix must be judged.

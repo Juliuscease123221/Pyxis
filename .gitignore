@@ -25,3 +25,5 @@ data/vectors/
 
 # Phase 3: cluster artifacts are reproducible from cluster/README.md
 data/cluster/
+
+data/layout/
