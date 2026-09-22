@@ -11,3 +11,6 @@ scipy>=1.11
 onnx>=1.15
 onnxruntime>=1.17
 transformers>=4.40
+
+# Phase 3 - clustering
+hdbscan>=0.8.40

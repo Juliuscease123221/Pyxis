@@ -22,3 +22,6 @@ Thumbs.db
 # Phase 2: model weights and vectors are reproducible from embed/README.md
 data/models/
 data/vectors/
+
+# Phase 3: cluster artifacts are reproducible from cluster/README.md
+data/cluster/

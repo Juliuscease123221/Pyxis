@@ -361,3 +361,143 @@ game *is* beats one publisher describing what they wish it were.
   proves it.
 - Review counts still mix dump and crawl vintages — irrelevant to embeddings,
   relevant to Phase 5 importance ranking.
+
+---
+
+## Phase 3 — Cluster hierarchy and labels
+
+**Acceptance: PASS.** `data/cluster/tree_k12_labelled.json` — walking root to
+leaf gives labels a person would say out loud. Full reasoning in
+[cluster/RATIONALE.md](cluster/RATIONALE.md).
+
+```
+Hollow Knight  →  Platformer   →  Metroidvania / Exploration  →  Souls-like / Difficult / Dark Fantasy
+Terraria       →  Simulation   →  Open World Survival Craft   →  Online Co-Op / Co-op
+Dota 2         →  Free to Play →  Multiplayer / Shooter       →  PvP / RTS / MOBA
+```
+
+**Shipped: recursive spherical k-means, not HDBSCAN.** The HDBSCAN path was
+built, collapsed, labelled and read before being rejected on evidence. It stays
+in the repo because the comparison is the result.
+
+### PCA quietly undid the Phase 2 decision
+
+SPEC.md asks for 50 dims at ~90% variance. On this embedding that needs 208
+dims; 50 gives 54.6%. The two constraints are incompatible and one has to go.
+
+The worse problem was invisible. Variant C is `[0.5·A₃₈₄, 0.5·B₁₂₈]`; both
+halves carry equal total variance, but the tag half packs it into 128 dims
+while the text half spreads it over 384, so PCA takes tag directions first. At
+50 dims the clustering input is **85.8% tag loading** — the α=0.5 blend chosen
+in Phase 2, nullified by a preprocessing step, with every number still looking
+reasonable.
+
+The shipped path sidesteps it: k-means does not need the density contrast PCA
+was there to rescue, so it runs on the full 512-d vector and the blend survives
+exactly as chosen. Had the pipeline stayed on HDBSCAN, `--mode balanced` (PCA
+each half separately, rejoin at parity) was the fix.
+
+### The tree was a caterpillar, and the reported noise was the wrong number
+
+HDBSCAN returned **84.2% noise** — but that is EOM *flat-label selection*,
+which this pipeline never uses. The condensed tree assigns 100% of games to
+some node (verified: 56,129 rows, 56,129 unique). The honest figure is games
+falling out at the root: **20.6%** at min_samples=1, 39.8% at 5.
+
+Quoting 84.2% would have made a structural problem look like a data problem.
+
+The real defect was shape: 562 nodes, **depth 143**, branching factor 2 at
+every level — one spine shedding a small cluster at each step while the bulk
+continued down. SPEC.md predicts "a cluster divides into itself plus four
+noise points"; the condensed tree has already absorbed that, so what survives
+is the same pathology applied to *clusters*. The warning was right, one level
+above where it was expected.
+
+Collapse measured: 562 → 304 nodes, depth 143 → 6, mean fan-out 4.61. **210
+spine merges, 0 small-branch dissolves, 0 pass-through dissolves.** The two
+rules SPEC.md describes fired zero times; the entire restructuring came from
+spine collapse, which is not in the spec.
+
+### Every threshold bought the same trade-off
+
+| spine_ratio | unclustered | biggest node |
+| ---: | ---: | ---: |
+| 0.3 | 63.7% | 28.8% |
+| 0.9 | 20.6% | 79.4% |
+
+Two descriptions of one fact: half the catalog is a connected region with no
+internal density structure, and tuning only chooses whether to call it "noise"
+or "one enormous cluster". Reading the labels ended it — the 49% node came out
+"Visual Novel / Action Roguelike / Turn-Based Strategy", and Hollow Knight's
+path terminated at **"Golf / Sokoban / Pinball"**.
+
+Steam is a continuum. There is no density valley between action-roguelikes and
+action-platformers. HDBSCAN was answering honestly; the question does not suit
+it. Confirmed across 40+ configurations, with cosine geometry, and on the pure
+tag space — every one gave ≥73% noise or 2–3 mega-clusters.
+
+### Labelling: the metric improved while the product got worse
+
+Sibling scoping is the requirement; the denominator took three attempts.
+
+1. `tf·log(1 + n/df)` — a tag on every sibling still scores log 2, and generic
+   tags have the highest tf, so they win. **90.0%** of children reused a parent
+   term: "Action → Action → Action Indie", verbatim.
+2. `tf·log(n/df)` — now zero for a tag on every sibling, which kills generic
+   terms *and* the defining term of any coherent cluster. Whatever tag sits in
+   exactly one sibling wins, however rare. Stardew Valley's neighbourhood came
+   out **"Memes / Naval Combat / Pirates"**. Repetition fell to 17.7% while the
+   labels got considerably worse — the metric moved the wrong way round.
+3. **Prevalence × lift**, which ships:
+   `score = p_c(t) · log((p_c(t)+ε)/(p_rest(t)+ε))`, coverage on both sides.
+
+Both failures share one cause: `df` is a *binary presence count* and cannot
+tell "on 90% of every sibling" from "on 2% of every sibling". The fix is to
+compare degrees rather than presence against absence.
+
+SPEC.md warns that special-casing common tags signals wrong scoping. True —
+and the corollary is that the scope must be a *graded* sibling comparison. With
+that, commonness handles itself: 20.2% repetition, 0 unnamed nodes, no
+stopword list anywhere.
+
+### Noise handling, as decided
+
+The shipped tree has **0% unclustered** — k-means places every game in a leaf,
+so nothing is soft-assigned and nothing renders specially.
+
+For the HDBSCAN path both options SPEC.md asks to choose between are
+implemented in `assign_noise`: `soft` (nearest leaf centroid by cosine, every
+game gets a position, the cost being that an isolated game inherits a label
+that is a small lie) and `keep` (left at the root as explicit unclustered
+territory for the map to render dimmer and unlabelled). `soft` was the default
+there. Both record the assignment per game so a viewer can distinguish core
+members from soft-assigned ones. Neither lets noise disappear.
+
+A double-counting bug in the first implementation reported 184.2% coverage:
+soft-assigned games were appended to their nearest leaf while still counted at
+the root. Fixed by reassigning rather than appending; the report now prints
+distinct-vs-total and flags duplicate placements.
+
+### Phase 8 substitution: NMI against tags, not Steam genres
+
+Phase 8 specifies NMI against Steam genres. Phase 2 already showed those genres
+carry almost no information here — genre agreement was **1.28–1.30× over
+baseline for every embedding variant**, including pure text, because ~20 genres
+cover 56,129 games and `Indie` alone covers 59%. A metric that could not
+separate three very different embeddings will not separate cluster depths.
+
+**Plan:** measure NMI against **community tags** (453 values, demonstrated
+discriminative power: 57.5% → 84.5% on top-tag agreement), and report genre NMI
+beside it explicitly labelled as the uninformative baseline — so the
+substitution is visible rather than a quiet swap.
+
+### Known weaknesses at this phase
+
+- Every k-means split is forced; the method cannot say "no structure here", so
+  some depth-3 leaves are arbitrary slices of a continuum.
+- Depth 4 holds 0.9% of games — `min_split=120` halts before the depth cap, so
+  the map gets three levels of real semantics, not six.
+- "Indie / Casual / VR" (5,522 games) is a residue bucket, not a genre.
+- Fallout 4 lands under "FPS / Shooter"; Dota 2 reaches MOBA only at depth 3.
+- k was chosen from two candidates (8, 12), not searched.
+- Labels are raw tag terms joined by slashes; LLM tidying is cut line 1.
