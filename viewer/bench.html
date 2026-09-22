@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atlas — renderer benchmarks</title>
+<style>
+  body { background:#0d1117; color:#e6edf3; margin:0; padding:22px;
+    font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  h1 { font-size:15px; margin:0 0 4px; }
+  p.note { color:#8b949e; margin:0 0 18px; max-width:70ch; font-family:ui-sans-serif,system-ui,sans-serif; }
+  table { border-collapse:collapse; margin:0 0 22px; }
+  th,td { padding:4px 14px 4px 0; text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:#8b949e; font-weight:500; border-bottom:1px solid #30363d; }
+  .win { color:#7ee787; } .lose { color:#ff7b72; }
+  canvas { position:fixed; left:-10000px; width:1280px; height:720px; }
+  #out { white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Atlas renderer benchmarks</h1>
+<p class="note">
+  Parse cost and render cost, measured in the browser. The parse figures in the
+  tiles README were Python (<code>json.loads</code> vs <code>np.frombuffer</code>);
+  these replace them. Render timing forces a pipeline flush with
+  <code>readPixels</code>, because <code>gl.finish()</code> does not reliably
+  synchronise in WebGL and a frame counter measures the scheduler rather than
+  the renderer.
+</p>
+<div id="out">running…</div>
+<canvas id="bench"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/regl/2.1.0/regl.min.js"></script>
+<script type="module">
+import { decodeTile } from './js/binary.js';
+
+const out = document.getElementById('out');
+const log = (h) => { out.innerHTML += h; };
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+
+// --------------------------------------------------------------- parse cost
+function buildJson(P, n) {
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    rows.push({ x: P.x[i], y: P.y[i], id: P.id[i],
+                cluster: P.cat[i], importance: P.imp[i] });
+  }
+  return JSON.stringify(rows);
+}
+
+function sliceBinary(buf, P, n) {
+  // rebuild a struct-of-arrays tile of the first n points
+  const HEADER = 28;
+  const body = n * (4 + 4 + 4 + 4 + 2);
+  const b = new ArrayBuffer(HEADER + body + ((-body) % 4 + 4) % 4);
+  const dv = new DataView(b);
+  dv.setUint8(0, 65); dv.setUint8(1, 84); dv.setUint8(2, 76); dv.setUint8(3, 83);
+  dv.setUint16(4, 1, true); dv.setUint16(6, 1, true); dv.setUint32(8, n, true);
+  for (let k = 0; k < 4; k++) dv.setFloat32(12 + k * 4, P.bbox[k], true);
+  let o = HEADER;
+  new Float32Array(b, o, n).set(P.x.subarray(0, n)); o += n * 4;
+  new Float32Array(b, o, n).set(P.y.subarray(0, n)); o += n * 4;
+  new Uint32Array(b, o, n).set(P.id.subarray(0, n)); o += n * 4;
+  new Uint32Array(b, o, n).set(P.cat.subarray(0, n)); o += n * 4;
+  new Uint16Array(b, o, n).set(P.imp.subarray(0, n));
+  return b;
+}
+
+async function parseBench(P) {
+  const sizes = [1000, 5000];
+  log(`<h1>Parse cost — JSON.parse vs typed-array views</h1>`);
+  log(`<table><tr><th>points</th><th>JSON bytes</th><th>binary bytes</th>`
+    + `<th>JSON ms</th><th>binary ms</th><th>ratio</th></tr>`);
+  const rows = [];
+  for (const n of sizes) {
+    const js = buildJson(P, n);
+    const bin = sliceBinary(P.rawBuf ? P.rawBuf : null, P, n);
+    const enc = new TextEncoder().encode(js);
+
+    // performance.now() is clamped to ~0.1ms in browsers (Spectre mitigation),
+    // and a binary decode of 1,000 points lands well under that -- measured
+    // directly it reads as a flat 0. Both paths are therefore repeated inside
+    // the timing window so the per-parse cost is above the clock resolution.
+    const REPS_JSON = 20, REPS_BIN = 2000;
+    const jsRuns = [], binRuns = [];
+    for (let r = 0; r < 7; r++) {
+      let t0 = performance.now();
+      for (let q = 0; q < REPS_JSON; q++) {
+        // parse AND materialise into typed arrays, which is what a renderer
+        // actually needs -- JSON.parse alone understates the work
+        const arr = JSON.parse(js);
+        const xs = new Float32Array(arr.length), ys = new Float32Array(arr.length);
+        for (let i = 0; i < arr.length; i++) { xs[i] = arr[i].x; ys[i] = arr[i].y; }
+        if (xs.length !== n) throw new Error('bad');
+      }
+      jsRuns.push((performance.now() - t0) / REPS_JSON);
+
+      t0 = performance.now();
+      let acc = 0;
+      for (let q = 0; q < REPS_BIN; q++) {
+        const d = decodeTile(bin);
+        // touch the views so the comparison is not optimised away
+        acc += d.x[0] + d.y[d.count - 1] + d.cat[0];
+      }
+      binRuns.push((performance.now() - t0) / REPS_BIN);
+      if (!Number.isFinite(acc)) throw new Error('bad');
+    }
+    const j = median(jsRuns), b = median(binRuns);
+    rows.push({ n, jsonBytes: enc.length, binBytes: bin.byteLength, j, b });
+    log(`<tr><td>${n.toLocaleString()}</td><td>${enc.length.toLocaleString()}</td>`
+      + `<td>${bin.byteLength.toLocaleString()}</td>`
+      + `<td class="lose">${j.toFixed(3)}</td><td class="win">${b.toFixed(5)}</td>`
+      + `<td><b>${(j / b).toFixed(0)}×</b></td></tr>`);
+  }
+  log(`</table>`);
+  return rows;
+}
+
+// -------------------------------------------------------------- render cost
+function makeSynthetic(n) {
+  // same generator shape as tiles/bench.py: clustered, heavy-tailed importance
+  const k = 60, cx = [], cy = [];
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  for (let i = 0; i < k; i++) { cx.push(rnd() * 100 - 50); cy.push(rnd() * 100 - 50); }
+  const x = new Float32Array(n), y = new Float32Array(n), imp = new Float32Array(n);
+  const gauss = () => { let u = 0, v = 0; while (!u) u = rnd(); while (!v) v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  for (let i = 0; i < n; i++) {
+    const c = i % k, s = 0.6 + (c % 5);
+    x[i] = cx[c] + gauss() * s; y[i] = cy[c] + gauss() * s;
+    imp[i] = Math.pow(rnd(), 3);
+  }
+  return { x, y, imp, n };
+}
+
+function reglBench(regl, data, runs = 5, frames = 40) {
+  const pos = new Float32Array(data.n * 2);
+  for (let i = 0; i < data.n; i++) { pos[i * 2] = data.x[i]; pos[i * 2 + 1] = data.y[i]; }
+  const draw = regl({
+    vert: `precision highp float; attribute vec2 position; attribute float imp;
+      uniform float scale; varying float v;
+      void main(){ gl_Position=vec4(position*scale,0.,1.); gl_PointSize=1.5+imp*3.0; v=imp; }`,
+    frag: `precision highp float; varying float v;
+      void main(){ vec2 d=gl_PointCoord-vec2(.5); float r=dot(d,d);
+        if(r>.25) discard; gl_FragColor=vec4(.4+v*.5,.75,.95,smoothstep(.25,.05,r)); }`,
+    attributes: { position: regl.buffer(pos), imp: regl.buffer(data.imp) },
+    uniforms: { scale: 0.018 },
+    count: data.n, primitive: 'points',
+    blend: { enable: true, func: { srcRGB: 'src alpha', srcAlpha: 1,
+      dstRGB: 'one minus src alpha', dstAlpha: 1 } },
+    depth: { enable: false },
+  });
+  const gl = regl._gl, px = new Uint8Array(4);
+  const times = [];
+  for (let r = 0; r < runs; r++) {
+    regl.clear({ color: [0, 0, 0, 1] }); draw();
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    for (let f = 0; f < frames; f++) { regl.clear({ color: [0, 0, 0, 1] }); draw(); }
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    times.push((performance.now() - t0) / frames);
+  }
+  return median(times);
+}
+
+async function renderBench() {
+  const canvas = document.getElementById('bench');
+  canvas.width = 1280; canvas.height = 720;
+  const regl = createREGL({ canvas, attributes: { antialias: false, alpha: false } });
+  const gl = regl._gl;
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+
+  log(`<h1>Render cost — regl, one draw call</h1>`);
+  log(`<p class="note">GPU: ${gpu}<br>1280×720, median of 5 runs × 40 frames, `
+    + `pipeline flushed each run.</p>`);
+  log(`<table><tr><th>points</th><th>ms/frame</th><th>implied fps</th>`
+    + `<th>60fps budget used</th></tr>`);
+  const rows = [];
+  for (const n of [10000, 50000, 200000]) {
+    const ms = reglBench(regl, makeSynthetic(n));
+    rows.push({ n, ms });
+    const pct = ms / 16.67 * 100;
+    log(`<tr><td>${n.toLocaleString()}</td><td>${ms.toFixed(3)}</td>`
+      + `<td class="${1000 / ms >= 60 ? 'win' : 'lose'}">${Math.round(1000 / ms).toLocaleString()}</td>`
+      + `<td>${pct.toFixed(1)}%</td></tr>`);
+  }
+  log(`</table>`);
+  return { gpu, rows };
+}
+
+// ------------------------------------------------------------------ run all
+(async () => {
+  out.innerHTML = '';
+  const buf = await fetch('public/all.bin').then(r => r.arrayBuffer());
+  const P = decodeTile(buf);
+  P.rawBuf = buf;
+  const parse = await parseBench(P);
+  const render = await renderBench();
+  window.__bench = { parse, render };
+  log(`<p class="note">done — results on <code>window.__bench</code></p>`);
+})().catch(e => { out.textContent = 'error: ' + e.message; console.error(e); });
+</script>
+</body>
+</html>

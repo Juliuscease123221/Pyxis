@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atlas — renderer comparison</title>
+<style>
+  body { background:#0d1117; color:#e6edf3; margin:0; padding:22px;
+    font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  h1 { font-size:15px; margin:18px 0 4px; }
+  p.note { color:#8b949e; margin:0 0 16px; max-width:76ch;
+    font-family:ui-sans-serif,system-ui,sans-serif; }
+  table { border-collapse:collapse; margin:0 0 18px; }
+  th,td { padding:4px 16px 4px 0; text-align:right; }
+  th:first-child,td:first-child { text-align:left; }
+  th { color:#8b949e; font-weight:500; border-bottom:1px solid #30363d; }
+  .win { color:#7ee787; } .lose { color:#ff7b72; }
+  #plot { position:fixed; left:-10000px; width:1280px; height:720px; }
+  canvas#bench { position:fixed; left:-10000px; width:1280px; height:720px; }
+</style>
+</head>
+<body>
+<div id="out">running…</div>
+<canvas id="bench"></canvas>
+<div id="plot"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/regl/2.1.0/regl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.32.0/plotly.min.js"></script>
+<script type="module">
+const out = document.getElementById('out');
+const log = h => { out.innerHTML += h; };
+const median = a => { const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
+
+function makeSynthetic(n) {
+  const k = 60, cx = [], cy = [];
+  let seed = 12345;
+  const rnd = () => (seed = (seed*1664525 + 1013904223) >>> 0) / 4294967296;
+  for (let i=0;i<k;i++){ cx.push(rnd()*100-50); cy.push(rnd()*100-50); }
+  const x = new Float32Array(n), y = new Float32Array(n), imp = new Float32Array(n);
+  const gauss = () => { let u=0,v=0; while(!u)u=rnd(); while(!v)v=rnd();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); };
+  for (let i=0;i<n;i++){ const c=i%k, s=0.6+(c%5);
+    x[i]=cx[c]+gauss()*s; y[i]=cy[c]+gauss()*s; imp[i]=Math.pow(rnd(),3); }
+  return { x, y, imp, n };
+}
+
+// ---- regl: steady-state frame cost, and first paint -----------------------
+function reglSetup(regl, d) {
+  const pos = new Float32Array(d.n*2);
+  for (let i=0;i<d.n;i++){ pos[i*2]=d.x[i]; pos[i*2+1]=d.y[i]; }
+  return regl({
+    vert:`precision highp float; attribute vec2 position; attribute float imp;
+      uniform float scale; varying float v;
+      void main(){ gl_Position=vec4(position*scale,0.,1.); gl_PointSize=1.5+imp*3.0; v=imp; }`,
+    frag:`precision highp float; varying float v;
+      void main(){ vec2 q=gl_PointCoord-vec2(.5); float r=dot(q,q);
+        if(r>.25) discard; gl_FragColor=vec4(.4+v*.5,.75,.95,smoothstep(.25,.05,r)); }`,
+    attributes:{ position: regl.buffer(pos), imp: regl.buffer(d.imp) },
+    uniforms:{ scale: 0.018 },
+    count: d.n, primitive:'points',
+    blend:{enable:true,func:{srcRGB:'src alpha',srcAlpha:1,
+      dstRGB:'one minus src alpha',dstAlpha:1}},
+    depth:{enable:false},
+  });
+}
+
+function reglFrameCost(regl, draw, runs=5, frames=40) {
+  const gl = regl._gl, px = new Uint8Array(4), times=[];
+  for (let r=0;r<runs;r++){
+    regl.clear({color:[0,0,0,1]}); draw();
+    gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    const t0=performance.now();
+    for (let f=0;f<frames;f++){ regl.clear({color:[0,0,0,1]}); draw(); }
+    gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    times.push((performance.now()-t0)/frames);
+  }
+  return median(times);
+}
+
+// ---- plotly: first paint and re-render on zoom ----------------------------
+async function plotlyCost(d, runs=5) {
+  const el = document.getElementById('plot');
+  const trace = [{ type:'scattergl', mode:'markers',
+    x: Array.from(d.x), y: Array.from(d.y),
+    marker:{ size:3, color:'#66bfe6', opacity:0.8 } }];
+  const layout = { width:1280, height:720, margin:{l:0,r:0,t:0,b:0},
+    xaxis:{visible:false}, yaxis:{visible:false},
+    paper_bgcolor:'#000', plot_bgcolor:'#000' };
+
+  const first=[], zoom=[];
+  for (let r=0;r<runs;r++){
+    Plotly.purge(el);
+    let t0=performance.now();
+    await Plotly.newPlot(el, trace, layout, {staticPlot:true, displayModeBar:false});
+    first.push(performance.now()-t0);
+
+    t0=performance.now();
+    await Plotly.relayout(el, {'xaxis.range':[-20,20],'yaxis.range':[-20,20]});
+    zoom.push(performance.now()-t0);
+  }
+  Plotly.purge(el);
+  return { first: median(first), zoom: median(zoom) };
+}
+
+(async () => {
+  out.innerHTML='';
+  const canvas=document.getElementById('bench');
+  canvas.width=1280; canvas.height=720;
+  const regl=createREGL({canvas,attributes:{antialias:false,alpha:false}});
+  const gl=regl._gl;
+  const dbg=gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu=dbg?gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL):'unknown';
+
+  log(`<h1>regl (this project) vs Plotly scattergl</h1>`);
+  log(`<p class="note">GPU: ${gpu} · 1280×720 · median of 5 runs.<br>
+    The two are not measured the same way, because they do not expose the same
+    thing. regl gives a per-frame draw we can time directly. Plotly's API is
+    declarative, so what is measurable is <b>first paint</b> (newPlot) and
+    <b>re-render on zoom</b> (relayout). A Plotly zoom re-runs its whole
+    pipeline, so its relayout cost is the fair analogue of a pan/zoom frame.</p>`);
+  log(`<table><tr><th>points</th><th>regl frame</th><th>regl fps</th>
+    <th>Plotly first paint</th><th>Plotly zoom</th><th>zoom ratio</th></tr>`);
+
+  const rows=[];
+  for (const n of [10000, 50000, 200000]) {
+    const d = makeSynthetic(n);
+    const draw = reglSetup(regl, d);
+    const rms = reglFrameCost(regl, draw);
+    let p = { first: NaN, zoom: NaN };
+    try { p = await plotlyCost(d); } catch (e) { console.warn('plotly failed', e); }
+    rows.push({ n, regl_ms: rms, plotly_first_ms: p.first, plotly_zoom_ms: p.zoom });
+    log(`<tr><td>${n.toLocaleString()}</td>
+      <td class="win">${rms.toFixed(3)} ms</td>
+      <td class="win">${Math.round(1000/rms).toLocaleString()}</td>
+      <td>${Number.isFinite(p.first)?p.first.toFixed(0)+' ms':'—'}</td>
+      <td class="${p.zoom>16.7?'lose':''}">${Number.isFinite(p.zoom)?p.zoom.toFixed(0)+' ms':'—'}</td>
+      <td><b>${Number.isFinite(p.zoom)?(p.zoom/rms).toFixed(0)+'×':'—'}</b></td></tr>`);
+  }
+  log(`</table>`);
+  log(`<p class="note"><b>deepscatter was not benchmarked.</b> It consumes
+    Apache Arrow tiles produced by its own quadfeather CLI and expects a served
+    tile directory in that format; standing that up is a port of this project's
+    data onto a second tiling scheme, not a configuration change. Reporting a
+    number from a half-configured competitor would be worse than reporting
+    none, so the comparison here is against Plotly only and the gap to
+    deepscatter is untested.</p>`);
+  window.__compare = { gpu, rows };
+  log(`<p class="note">done — window.__compare</p>`);
+})().catch(e=>{ out.textContent='error: '+e.message; console.error(e); });
+</script>
+</body>
+</html>

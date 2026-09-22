@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas — a semantic map of the Steam catalog</title>
+<style>
+  :root {
+    --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --dim:#6e7681;
+    --panel:rgba(22,27,34,.92); --border:#30363d; --accent:#ffe98c;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:var(--bg);
+    color:var(--fg);
+    font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  #app { position:fixed; inset:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #gl { cursor:crosshair; }
+  #overlay { pointer-events:none; }
+
+  #hud, #legend {
+    position:absolute; padding:7px 11px; background:var(--panel);
+    border:1px solid var(--border); border-radius:6px;
+    font-variant-numeric:tabular-nums; pointer-events:none;
+  }
+  #hud { top:12px; left:12px; }
+  #hud b { font-weight:600; } #hud span { color:var(--muted); }
+
+  #legend { bottom:12px; left:12px; color:var(--muted); line-height:1.7; }
+  #legend .row { display:flex; gap:7px; align-items:baseline; }
+  #legend .sw { display:inline-block; width:34px; text-align:center; }
+  #legend .strong { color:#f0f6fc; font-weight:600; }
+  #legend .normal { color:#c9d1d9; }
+  #legend .weak { color:#8b949e; font-style:italic; }
+  #legend .none { color:var(--dim); }
+
+  #panel {
+    position:absolute; top:12px; right:12px; width:272px; padding:12px 13px;
+    background:var(--panel); border:1px solid var(--border); border-radius:6px;
+    pointer-events:none;
+  }
+  #panel .name { font-size:15px; font-weight:600; margin-bottom:2px; }
+  #panel .tags { color:var(--muted); font-size:11.5px; margin-bottom:9px; }
+  #panel .path { font-size:11.5px; color:#c9d1d9; margin-bottom:10px;
+    padding-bottom:9px; border-bottom:1px solid var(--border); }
+  #panel .path span { color:var(--dim); }
+  #panel .nb b { color:var(--fg); }
+  #panel .nb { font-size:11.5px; color:var(--muted); }
+  #panel .verdict { font-weight:600; }
+  #panel .verdict.cohesive { color:#7ee787; }
+  #panel .verdict.partly { color:#e3b341; }
+  #panel .verdict.scattered { color:#ff7b72; }
+  #panel .hint { color:var(--dim); margin:3px 0 6px; }
+  #panel ol { margin:0; padding-left:17px; color:#c9d1d9; }
+  #panel ol li { margin:1px 0; }
+  #panel .foot { margin-top:9px; padding-top:8px; border-top:1px solid var(--border);
+    color:var(--dim); font-size:11px; }
+
+  #status { position:absolute; inset:0; display:grid; place-items:center;
+    color:var(--muted); font-size:14px; }
+  kbd { background:#21262d; border:1px solid var(--border); border-bottom-width:2px;
+    border-radius:4px; padding:0 4px; font:inherit; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="gl"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="hud"></div>
+  <div id="panel" hidden></div>
+  <div id="legend">
+    <div class="row"><span class="sw strong">Aa</span> confident label</div>
+    <div class="row"><span class="sw weak">Aa</span> weak — barely distinguishes the region</div>
+    <div class="row"><span class="sw none">—</span> no label — scattered or unnamed</div>
+    <div class="row" style="margin-top:5px">hover a point for its true neighbours ·
+      <kbd>esc</kbd> resets</div>
+  </div>
+  <div id="status">loading…</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/regl/2.1.0/regl.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

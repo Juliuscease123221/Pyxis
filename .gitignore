@@ -30,3 +30,6 @@ data/layout/
 
 data/tiles_input/
 data/tiles_out/
+
+viewer/captures/
+viewer/public/

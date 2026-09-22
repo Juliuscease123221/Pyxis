@@ -1184,3 +1184,212 @@ left it.
   ratio will differ in magnitude while the direction holds, since `JSON.parse`
   also allocates one object per point where the typed-array path allocates
   nothing. Worth re-measuring in Phase 6 with real browser numbers.
+
+---
+
+## Phase 6 — Renderer and semantic zoom
+
+**Acceptance: PASS.** A single continuous zoom from the whole catalog to one
+game, labels resolving throughout, at 0.77 ms/frame for 200,000 points — 4.6%
+of a 60 fps budget. `docs/demo.gif` is that zoom, captured from the live
+renderer.
+
+### Points on screen before any machinery, and it caught two bugs
+
+The instruction was to render points and look at them before building the LOD,
+on the grounds that a map wrong to the eye means something upstream is wrong
+that the metrics missed. It found two things in the first twenty minutes, both
+of which would have broken the phase's central feature silently.
+
+**Every category's bounding box was inflated by outliers.** Zooming to fit the
+Platformer territory produced 1.35× magnification, because a handful of its
+5,630 members sit nowhere near the rest. Measured across the top territories,
+raw boxes cover 48–75% of the map where 5th–95th percentile boxes cover
+1.7–14.6% — a **24–29× difference**. Footprint LOD divides by that area, so
+with raw boxes every territory sits permanently above the "too large to label"
+cutoff and **no label ever appears**. The manifest now carries `bbox_core`
+alongside `bbox`; LOD uses the former, fit-to-view and hit testing the latter.
+
+**The root category had a zero-area box.** Leiden's internal nodes hold no
+direct members, so a fallback that used `members or [0]` gave the root a
+single-point extent, and every footprint fraction came out `NaN`. A parent's
+box has to cover its whole subtree.
+
+Neither is visible in any number produced before Phase 6. Both are obvious
+within one screenshot.
+
+### Footprint LOD, and the argument that actually applies
+
+SPEC.md justifies footprint-keyed LOD by depth variance: dense regions nest
+six or seven levels, sparse ones stop at two. **That argument does not hold for
+the tree that shipped.** Recursive Leiden produces near-uniform depth — 83% of
+games at depth 5, 17% at depth 4. Nothing nests to seven; nothing stops at two.
+
+The justification is size variance at a fixed depth. The 27 territories span
+**276 to 7,239 games** — a 26× spread — and their trimmed extents cover 1.7% to
+14.6% of the screen, an order of magnitude apart at the same level. A
+depth-keyed rule shows all 27 at one zoom: where Visual Novel is comfortably
+readable, Hidden Object is an unreadable speck; where Hidden Object is legible,
+Visual Novel needed subdividing long ago. Footprint keys the decision to what
+the viewer can see, so small territories surface later and large ones subdivide
+sooner, with no per-level tuning.
+
+Footprint is computed in **screen pixels**, by projecting the trimmed box's
+corners, not by scaling a world area by `scale²`. The clip-space form needs an
+aspect correction, and getting it wrong is silent — labels simply select the
+wrong nodes, which reads as a tuning problem rather than an arithmetic one. The
+first implementation had exactly that bug and labelled depth-3 nodes at full
+zoom-out.
+
+Visibility window: **0.002 to 0.25** of the viewport, cross-faded with a
+smoothstep at both edges. The same smoothstep drives label opacity, so a
+parent fades out over precisely the interval its children fade in — one rule,
+not two kept in sync. An initial guess of 0.05 was an order of magnitude too
+high.
+
+### The prune threshold is load-bearing, not cosmetic
+
+Set at **purity 0.35**, pruning 11 of 27 territories. Two things justify it.
+
+First, it is insensitive. Sorted by purity the territories fall into two groups
+with a clear gap: pruned runs Education 0.03 … Puzzle 0.13, Online Co-Op 0.26;
+kept starts at Shooter 0.38, then Local Multiplayer 0.53 … Platformer 0.88. Any
+threshold in **0.27–0.37** selects the same split, so 0.35 is not tuned.
+
+Second — and this only became clear from measurement — **footprint correlates
+inversely with purity**. A scattered category has a large box *because* its
+members are spread out. At the home view the six largest footprints are RPG
+(purity 0.08), Education (0.03), VR (0.04), Puzzle (0.13), Free to Play (0.06)
+and Indie (0.12): every one a territory that is not a place. Without pruning,
+footprint LOD would preferentially label the worst categories on the map. The
+rule is not a tidiness measure, it is what makes the LOD sane.
+
+Worth flagging as a cost: RTS (0.12) and Survival (0.05) are real genres a
+viewer would expect to see named, and they are pruned. Their members genuinely
+are scattered in this layout, so their sub-regions are named instead.
+
+### Confidence tiers
+
+Rendered as three visual weights rather than a binary: **strong/normal** get
+full-weight labels, **weak** is dimmed italic, **none** gets no label. 80.8% of
+games sit under a normally-labelled node, 11.3% under a dimmed one, 7.9% under
+none. Dropping every uncertain label leaves grey continents that read as
+unfinished; dimming says "this region is loosely Casual games" and makes the
+uncertainty part of what the map communicates.
+
+### Neighbour highlight: the projection loss made visible
+
+Only 10–15% of a game's true 10-NN are among its nearest on screen. Rather than
+hide that, hover halos the game's **real** neighbours from the embedding
+wherever they land, read from a precomputed `knn.bin` (2.25 MB at k=10) and
+never from screen distance.
+
+The panel states a verdict, computed from how far the neighbours spread
+relative to the map:
+
+```
+Hollow Knight   0.006  cohesive          its true neighbours sit together here
+Portal 2        0.006  cohesive
+Terraria        0.002  cohesive
+Cuphead         0.052  partly scattered
+Dota 2          0.161  scattered         this game resists placement
+```
+
+Catalog-wide: **73% cohesive, 22% partly scattered, 5% scattered.** The two
+games it flags are Cuphead and Dota 2 — the same two that were the weak cases
+in Phase 2's embedding spot-checks and Phase 3's label paths. A feature that
+independently rediscovers the pipeline's known problem cases is doing real
+work, and it converts a limitation into something the viewer can inspect.
+
+### Browser benchmarks, replacing the Python figures
+
+`viewer/bench.html`, AMD Radeon RX 7600 XT, 1280×720, median of 5 runs × 40
+frames, pipeline flushed with `readPixels` each run.
+
+| points | ms/frame | implied fps | 60 fps budget |
+| ---: | ---: | ---: | ---: |
+| 10,000 | 0.453 | 2,210 | 2.7% |
+| 50,000 | 0.550 | 1,818 | 3.3% |
+| **200,000** | **0.770** | **1,299** | **4.6%** |
+
+Two methodology notes. `gl.finish()` does **not** reliably synchronise in
+WebGL — timing 60 draws around it reported 77,000 fps. `readPixels` forces a
+real flush. And a frame *counter* measures the scheduler, not the renderer:
+`requestAnimationFrame` is throttled to ~1 Hz in a background tab, which is
+also what made the first capture attempt hang.
+
+**Parse cost, in the browser:**
+
+| points | JSON | binary | size | parse |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 86.6 KB / 0.150 ms | 17.6 KB / 0.0002 ms | 4.9× | **750×** |
+| 5,000 | 436.6 KB / 0.790 ms | 87.9 KB / 0.00025 ms | 5.0× | **3,160×** |
+
+The tiles README said 233× from Python. The browser figure is far larger *and
+grows with tile size*, because the binary path is **constant time** — it
+creates typed-array views over the received buffer and touches nothing — while
+`JSON.parse` plus object allocation is linear. `performance.now()` is clamped
+to ~0.1 ms, so both paths had to be repeated inside the timing window; measured
+directly, binary decode reads as a flat zero.
+
+### The competitor comparison, reported straight
+
+| points | regl frame | Plotly first paint | Plotly zoom | ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 0.44 ms | 45 ms | 1 ms | 2× |
+| 50,000 | 0.55 ms | 40 ms | 1 ms | 3× |
+| 200,000 | 0.77 ms | 85 ms | 4 ms | 5× |
+
+**Plotly's scattergl is not slow.** It is also WebGL, and it re-renders 200,000
+points on zoom in about 4 ms — comfortably above 60 fps. The honest claim is
+2–5× on re-render and roughly 100× on first paint, not an order of magnitude on
+frame cost. Writing "Plotly can't handle 200k" would have been false.
+
+What the custom renderer actually buys is **control**, not raw speed:
+per-point shading by active ancestor, confidence-driven dimming, and neighbour
+haloing are all one attribute update and one draw call here, and are not
+expressible through Plotly's declarative API at all. That is the argument the
+numbers support.
+
+**deepscatter was not benchmarked.** It consumes Apache Arrow tiles produced by
+its own quadfeather CLI and expects a served tile directory in that format;
+standing it up means porting this project's data onto a second tiling scheme.
+A number from a half-configured competitor is worse than no number, so the gap
+to deepscatter is untested and stated as untested.
+
+### The demo GIF
+
+Captured from the live renderer — same shaders, same label placement, same
+cross-fades — by posting each composited frame back to a capture endpoint on
+the dev server. A matplotlib re-creation would have been a picture of the thing
+rather than the thing.
+
+Two things the first attempt got wrong, both visible only on playback. The
+zoom ended at 300×, which is "down to one game" in the literal sense and shows
+a near-empty field with a single dot; it now ends at 45×, where the game sits
+among its neighbours, which is the claim the map is making. And the detail
+panel is DOM, so it never composited — the destination frames now draw the
+game, its path and its true neighbours onto the frame directly.
+
+### Known weaknesses
+
+- **Label density is high at mid-zoom.** 25 labels drawn with 234 suppressed at
+  full view, 361 with 151 suppressed at 15×. Greedy collision keeps the largest,
+  so the result is readable, but the suppression count says the footprint
+  window is generous and a stricter one would be calmer.
+- **The viewer loads all 56,129 points as one blob**, not through the tile
+  pyramid built in Phase 5. That was the shortest path to looking at the map
+  and it never got replaced. `tiles/` is tested and benchmarked; wiring the
+  viewer to stream from it is outstanding, and at 1.01 MB total the current
+  path has not hurt enough to force the issue.
+- **`meta.json` is 5.62 MB unminified** and loaded eagerly for tooltips. It
+  dominates cold load.
+- **Time to first paint is 89 ms** from a local server — not a network-realistic
+  figure. Measured cold over a real connection it would be dominated by the
+  5.62 MB metadata file.
+- **No search, no breadcrumb UI.** Both are cut-line items; the breadcrumb
+  exists as the path line in the detail panel, but there is no way to fly to a
+  named game.
+- **`preserveDrawingBuffer: true`** is enabled for the whole app so the capture
+  path can read frames back. It costs some throughput on every frame to serve a
+  feature used once.

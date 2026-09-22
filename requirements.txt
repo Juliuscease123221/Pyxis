@@ -22,3 +22,6 @@ leidenalg>=0.10
 
 # Phase 5 - tiles library (optional extras)
 matplotlib>=3.8   # tiles.render only
+
+# Phase 6 - viewer tooling (optional)
+pillow>=10.0   # viewer.make_gif only
