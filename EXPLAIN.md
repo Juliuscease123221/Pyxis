@@ -1035,3 +1035,152 @@ cheap at k=10.
 atlas has this property and almost none report it. The map is a navigational
 aid, not a metric space, and saying so directly is a strength rather than an
 admission.
+
+---
+
+## Phase 5 — Tile engine (standalone library)
+
+**Acceptance: PASS.** `python -m tiles build points.parquet out/` builds from
+a parquet containing only `x, y, id, category, importance` — no domain fields
+— and `test_every_point_reachable` asserts every input point appears in at
+least one leaf tile, for both selection strategies. Verified independently on
+the real 56,129-game dataset: 56,129 in, 56,129 in leaf tiles, 0 missing.
+
+57 tests pass (26 in `tiles/`, 31 in `ingest/`).
+
+### Standalone, enforced rather than intended
+
+`tiles/` must ship as its own project, so the constraint is tested rather than
+trusted:
+
+- `test_library_imports_nothing_from_the_host_repo` parses every source file's
+  AST for imports of `ingest`, `embed`, `cluster`, `layout`, `viewer`, `bench`.
+  Convention would not survive one convenience import.
+- `test_no_domain_vocabulary_in_source` greps for domain words. **It failed on
+  first run** — my own docstrings said "games", "genres", "Steam" and used
+  `review_count` as an example column name. The library was already structurally
+  clean; its prose was not.
+
+Everything Atlas-specific lives in `export_tiles.py` at the repo root, which
+flattens the catalog, cluster tree and layout into five anonymous columns plus
+a manifest. Nothing in `tiles/` would need to change for a different dataset.
+
+### A bug the tests caught that review would not have
+
+`naive` selection ranked points by `np.argsort(-importance)`. `importance` is
+`uint16`, and negating an unsigned array **wraps** rather than negating:
+
+```
+importance:       [    0     1   100 65535]
+-importance:      [    0 65535 65436     1]
+argsort(-imp):    [    0 65535   100     1]   <- least important first
+```
+
+It selected the *least* important points in every coarse tile. The failure is
+invisible by inspection: the points are still spatially distributed, the tile
+counts are right, the file sizes are right, and a rendered map looks entirely
+plausible — it is simply showing the wrong thousand games. Only an assertion
+comparing selected importance against the true top-N cutoff caught it.
+`_desc()` now widens to int32 with the reasoning in a docstring, because the
+inline minus sign reads as obviously correct.
+
+### Struct-of-arrays, because the spec's own justification requires it
+
+SPEC.md specifies interleaved records and justifies binary over JSON because
+it maps "straight into a typed array". Those are incompatible: the record is 18
+bytes, so consecutive `x` values sit 18 bytes apart, and `Float32Array` needs a
+contiguous 4-byte-aligned run. Interleaved data can only be read through
+`DataView`, field by field, in a JS loop — which is most of the parse cost the
+format exists to avoid.
+
+The payload is therefore struct-of-arrays, giving the zero-copy view the spec
+wanted. The interleaved layout is still implemented (`--aos`) so the choice
+stays measurable. `count` is also widened from 2 bytes to 4: two bytes caps a
+tile at 65,535 points, which the 1M benchmark would exceed.
+
+### Binary vs JSON: the size argument is weaker than claimed, the parse argument is decisive
+
+| | raw | gzipped | parse |
+| --- | ---: | ---: | ---: |
+| binary | 15,450 B | 10,555 B | **0.003 ms** |
+| JSON | 86,052 B | 22,669 B | 0.748 ms |
+| ratio | 5.6× | **2.1×** | **233×** |
+
+SPEC.md estimates "JSON ≈ 80KB, binary ≈ 16KB" — close to the measured raw
+figures. But **gzip narrows 5.6× to 2.1×**, and any real deployment gzips. On
+size alone the custom format would be hard to justify.
+
+Parse cost is where it is won, and that is the number a size table omits: 233×
+slower, and gzip does nothing for it. Across a ~200-tile LRU cache that is the
+difference between a frame and a stall. The honest form of the argument is
+"JSON costs 2× the bytes and 233× the parse", not "JSON is 5× bigger".
+
+### Selection strategy, measured and pictured
+
+![naive vs stratified](../tiles/docs/selection.png)
+
+| strategy | zoom 0 | zoom 1 |
+| --- | ---: | ---: |
+| naive — top N by importance | 45% of the plane occupied | 71% |
+| stratified — top N per grid cell | **59%** | **92%** |
+
+Occupancy is the fraction of a 32×32 grid over the data extent holding at least
+one shown point. Naive concentrates on high-importance regions and leaves
+others visibly empty — a viewer reads them as sparse when they are merely
+unpopular. Stratified keeps the shape while importance still decides which
+point represents each cell. Stratified is the default.
+
+One thing the first rendering attempt got wrong and the picture exposed: it
+built with `max_zoom` equal to the zoom being displayed, so the displayed level
+*was* the leaf level, leaves are exhaustive by design, and both strategies
+showed all 40,000 points. The comparison rendered identically for both and
+looked like a bug in selection rather than in the harness.
+
+### Scaling to 1M
+
+| points | seconds | µs/point | tiles | records | MB |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 0.02 | 1.67 | 781 | 44,735 | 0.8 |
+| 100,000 | 0.11 | 1.08 | 913 | 221,580 | 4.0 |
+| 1,000,000 | 1.07 | 1.07 | 931 | 1,185,226 | 21.4 |
+
+100× the points costs **64.5×** the time — sub-linear, because tile count
+saturates once every quadrant is occupied (781 → 931 tiles across two orders of
+magnitude) and per-point work is a bucket assignment. Viewport→tile-list is
+~4 µs and flat across zoom levels, being arithmetic on bounds rather than a
+tree walk.
+
+Synthetic data is clustered with Pareto importance, deliberately: uniform
+points would flatter the quadtree, and uniform importance would flatter naive
+selection by spreading the top-N automatically.
+
+### Manifest
+
+Point records carry a **leaf category id only**; the renderer walks up via
+`parent`. At 1M points and depth 5, per-point ancestor chains would cost ~16 MB
+of data identical for every point in a category.
+
+The manifest carries `id`, `parent`, `label`, `bbox`, `centroid`, `size`,
+`depth`, `confidence`, `purity`, `containment` — confirmed on the real export:
+1,117 categories, 0 validation problems, confidence on all 1,117 and
+purity/containment on 1,116 (the root has no parent region). `confidence` and
+`purity` are opaque to the library but carried because the renderer needs to
+*dim* an uncertain label rather than drop it, and to decline drawing a region
+for a category whose points are scattered — the two decisions Phases 3 and 4
+left it.
+
+### Known weaknesses
+
+- **~2.9× redundancy** at `max_zoom=5` on the real data. Storage is linear in
+  zoom depth; the trade buys independently renderable tiles.
+- **No merging of sparse tiles.** A quadrant with three points still produces a
+  file. At 485 leaf tiles this is not yet worth fixing.
+- **`importance` is rank-normalised into uint16 on load.** Order is preserved
+  exactly, magnitudes are not. Selection only uses order, but a caller wanting
+  magnitude-weighted rendering would need the raw value alongside.
+- **Single-threaded**, which 1M points in ~1 s has not made worth changing.
+- **Parse timings are Python**, not JavaScript. The 233× ratio reflects
+  `json.loads` plus object allocation against `np.frombuffer`; the browser
+  ratio will differ in magnitude while the direction holds, since `JSON.parse`
+  also allocates one object per point where the typed-array path allocates
+  nothing. Worth re-measuring in Phase 6 with real browser numbers.

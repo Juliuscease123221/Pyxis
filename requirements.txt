@@ -19,3 +19,6 @@ hdbscan>=0.8.40
 umap-learn>=0.5.5
 igraph>=0.11
 leidenalg>=0.10
+
+# Phase 5 - tiles library (optional extras)
+matplotlib>=3.8   # tiles.render only
