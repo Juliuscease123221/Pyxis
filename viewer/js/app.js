@@ -255,6 +255,60 @@ async function boot() {
   let frames = 0, fps = 0, lastT = performance.now();
   let firstPaint = 0;
 
+  // ---- layer toggles ----------------------------------------------------
+  //
+  // `L` hides the label layer so the clustering can be seen unobstructed --
+  // which is the shot that shows the map actually worked, since labels are
+  // exactly the thing an observer might suspect of doing the work.
+  //
+  // The layer fades rather than snaps. 150ms is long enough to read as a
+  // deliberate transition and short enough not to feel like waiting; an
+  // instant cut of ~140 pieces of text reads as a rendering glitch.
+  //
+  // The state is a plain flag on the viewer, not on the camera, so it simply
+  // outlives every pan and zoom. Nothing underneath is switched off: the LOD
+  // pass and the collision pass run every frame regardless, so the label set
+  // is always the correct one for the current viewport the instant it is
+  // turned back on.
+  const FADE_MS = 150;
+  const layer = { labels: true, from: 1, to: 1, t0: -Infinity };
+
+  function labelAlpha(now = performance.now()) {
+    const t = Math.min(1, Math.max(0, (now - layer.t0) / FADE_MS));
+    return layer.from + (layer.to - layer.from) * t;
+  }
+
+  function toggleLabels(on = !layer.labels) {
+    if (on === layer.labels) return layer.labels;
+    // Start from the current alpha, not from 1 or 0: toggling mid-fade should
+    // reverse from where the layer actually is rather than jump to full and
+    // fade again.
+    layer.from = labelAlpha();
+    layer.to = on ? 1 : 0;
+    layer.t0 = performance.now();
+    layer.labels = on;
+    return on;
+  }
+
+  // `H` drops every fixed overlay for a clean capture. The search box counts
+  // as chrome even though it was not part of the HUD -- a screenshot with a
+  // search field in the corner is not a clean shot of the map. Hiding it while
+  // it holds focus would swallow keystrokes into an invisible input, so focus
+  // is dropped with it.
+  function toggleChrome(on = !layer.chrome) {
+    layer.chrome = on;
+    document.body.classList.toggle('no-chrome', !on);
+    if (!on) { search?.close(); $('search').blur(); }
+    return on;
+  }
+  layer.chrome = true;
+
+  // Declared here rather than at the construction site below: the key handler
+  // is registered before the search box exists and there is an `await` between
+  // the two, so a keypress in that window would hit the temporal dead zone of
+  // a `const` and throw.
+  let search = null;
+
   function drawFrame() {
     refreshColours();
     regl.poll();
@@ -270,7 +324,8 @@ async function boot() {
 
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     const entries = H.visibleLabels(project, overlay.width, overlay.height);
-    labelStats = drawLabels(ctx, entries, project, dpr, colourOfCategory);
+    labelStats = drawLabels(ctx, entries, project, dpr, colourOfCategory,
+                            labelAlpha());
 
     if (!firstPaint && scene.count) firstPaint = performance.now() - t_start;
 
@@ -286,7 +341,10 @@ async function boot() {
       + ` &nbsp;<b>z${tiles.levelFor(view.scale, home.scale)}</b>`
       + ` <span>${tiles.cache.size} tiles</span>`
       + ` &nbsp;<b>${(view.scale / home.scale).toFixed(1)}×</b>`
-      + ` &nbsp;<b>${labelStats.drawn}</b> <span>labels</span>`
+      // The count keeps updating while the layer is off, which is the visible
+      // proof that the LOD is still running underneath rather than paused.
+      + ` &nbsp;<b>${labelStats.drawn}</b> `
+      + `<span>labels: ${layer.labels ? 'on' : 'off'}</span>`
       + ` &nbsp;<b>${fps || '—'}</b> <span>fps</span>`;
   }
 
@@ -396,6 +454,17 @@ async function boot() {
   window.addEventListener('resize', () => {
     resize(); home.scale = fitScale(); refreshTiles(true);
   });
+  // A single-letter shortcut must never fire while the caret is in a field --
+  // typing "l" in the search box has to produce an "l". Testing the focused
+  // element covers the search box and anything added later, rather than
+  // naming one input.
+  function typingInField() {
+    const el = document.activeElement;
+    if (!el) return false;
+    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+           el.isContentEditable;
+  }
+
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       // Escape belongs to the search box while it has focus: there it closes
@@ -404,9 +473,29 @@ async function boot() {
       // other listeners on the *same* element (that needs
       // stopImmediatePropagation), so whichever registered first still runs.
       // Checking focus is clearer than depending on registration order.
-      if (document.activeElement === $('search')) return;
+      if (typingInField()) return;
       clearTimeout(cardTimer);
       Object.assign(view, home); setFocus(-1); refreshTiles();
+      return;
+    }
+
+    // Modified keys belong to the browser and to the existing ctrl/cmd+K
+    // binding: ctrl+L focuses the address bar, and stealing that would be
+    // hostile. `e.repeat` is ignored so holding a key does not strobe.
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (typingInField()) return;
+
+    switch (e.key) {
+      case 'l': case 'L': e.preventDefault(); toggleLabels(); break;
+      case 'h': case 'H': e.preventDefault(); toggleChrome(); break;
+      case 'f': case 'F':
+        // Animated rather than a snap, unlike escape: `F` is a view control
+        // and the flight shows where home is relative to where you were.
+        // Escape stays instant because it also clears the selection, and a
+        // dismissal should not take 450ms.
+        e.preventDefault();
+        flyTo({ ...home, scale: fitScale() }, 450);
+        break;
     }
   });
 
@@ -489,7 +578,7 @@ async function boot() {
                   scale: scaleToFit(b) });
   }
 
-  const search = new SearchBox({
+  search = new SearchBox({
     input: $('search'), list: $('results'), hierarchy: H,
     onPickGame: flyToGame, onPickLabel: flyToLabel,
   });
@@ -543,6 +632,7 @@ async function boot() {
 
   window.__atlas = {
     DENSITY, card, images, showCardFor,
+    toggleLabels, toggleChrome, labelAlpha, layer,
     H, view, home, scene, regl, tiles, meta, project, unproject,
     benchFrames, setFocus, refreshTiles, findByName,
     search, flyTo, flyToGame, flyToLabel, scaleToFit,

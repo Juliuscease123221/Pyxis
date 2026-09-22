@@ -33,6 +33,17 @@
   #legend .normal { color:#c9d1d9; }
   #legend .weak { color:#8b949e; font-style:italic; }
   #legend .none { color:var(--dim); }
+  #legend .keys { margin-top:6px; padding-top:6px;
+    border-top:1px solid var(--border); line-height:1.55; }
+  #legend .keys kbd { margin-right:3px; }
+  #legend .keys .row { gap:0; }
+
+  /* `H` clears every fixed overlay for a clean capture. The search box is
+     chrome too -- a screenshot of the map with a search field in the corner is
+     not a clean shot of the map. */
+  body.no-chrome #hud,
+  body.no-chrome #legend,
+  body.no-chrome #search-wrap { display:none; }
 
   #search-wrap { position:absolute; top:12px; right:12px; width:272px; z-index:6; }
   #search {
@@ -158,8 +169,13 @@
     <div class="row"><span class="sw strong">Aa</span> confident label</div>
     <div class="row"><span class="sw weak">Aa</span> weak — barely distinguishes the region</div>
     <div class="row"><span class="sw none">—</span> no label — scattered or unnamed</div>
-    <div class="row" style="margin-top:5px">hover for neighbours · click to open on Steam ·
-      <kbd>/</kbd> search · <kbd>esc</kbd> resets</div>
+    <div class="row" style="margin-top:5px">hover for neighbours · click to open on Steam</div>
+    <div class="keys">
+      <div class="row"><kbd>L</kbd> — toggle labels</div>
+      <div class="row"><kbd>H</kbd> — hide HUD and legend</div>
+      <div class="row"><kbd>F</kbd> — fit to home view</div>
+      <div class="row"><kbd>/</kbd> — search &nbsp;·&nbsp; <kbd>esc</kbd> — reset</div>
+    </div>
   </div>
   <div id="status">loading…</div>
 </div>

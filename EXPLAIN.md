@@ -1503,3 +1503,58 @@ read as speckle rather than territories, and a z0 tile is 53 KB either way.
   the top two levels are needed to draw the first frame.
 - **`preserveDrawingBuffer: true`** stays enabled for the capture path, costing
   some throughput on every frame for a feature used once.
+
+### Layer toggles: `L`, `H`, `F`
+
+Three single-key bindings, added for the demo GIF and kept because they are
+the fastest way to answer the question the map invites: *are the labels doing
+the work, or is the structure real?* `L` removes every label at every depth,
+leaving points and the density tint. If the territories still read as
+territories with nothing naming them, the clustering is what the viewer is
+looking at. `H` drops the fixed chrome for a clean capture, and `F` returns to
+the fitted home extent.
+
+**The label layer fades over 150 ms rather than cutting.** Roughly 140 pieces
+of text vanishing between two frames reads as a rendering fault, not as a
+control responding — the eye registers the discontinuity before it registers
+the cause. 150 ms is long enough to be seen as a transition and short enough
+that the key still feels instant. The alpha is computed from
+`performance.now()` on each call rather than accumulated per frame, so a fade
+started while `requestAnimationFrame` is throttled still lands on its final
+value instead of freezing partway. Toggling mid-fade retargets from the
+current alpha rather than from 1 or 0, so a fast double-press reverses from
+where the layer actually is.
+
+**Nothing is switched off underneath.** The obvious implementation skips the
+LOD pass while the layer is hidden, and it is wrong in a way that only shows
+up after a zoom: the label set is a function of the viewport, so a pass
+skipped during a pan has to be rebuilt on re-enable, and the first frame back
+shows the label set for wherever the camera used to be. Instead `drawLabels`
+takes a layer alpha and skips only the stroke and fill — footprint selection
+and greedy collision still run every frame. The counts it returns stay live,
+which is why the HUD reads `30 labels: off` rather than `0`: measured at 18×
+the count moved from 36 to 30 with 7 suppressed while the layer was hidden,
+and re-enabling drew the deep-zoom leaf labels immediately rather than the
+home-view territory labels. The cost is the text measurement for ~30 labels
+per frame, which does not register against the point draw.
+
+**The state lives on the viewer, not on the camera**, so it survives pans,
+zooms, fly-tos and tile swaps without any of them having to know about it.
+
+**Single-letter keys are guarded twice.** They are ignored while the caret is
+in any field, tested by `document.activeElement` rather than by naming the
+search input, so typing "hollow" in the search box types "hollow" instead of
+toggling chrome and flipping labels twice. They are also ignored when any
+modifier is held: `ctrl+L` is the browser's address bar and stealing it would
+be hostile, and `ctrl/cmd+K` already belongs to the search box. `e.repeat` is
+dropped so holding a key does not strobe the layer.
+
+`F` animates where `Escape` snaps. They are not redundant: `Escape` is a
+dismissal that also clears the selection and the card, and a dismissal that
+takes 450 ms feels broken, while `F` is a view control where the flight shows
+where home is relative to where you were.
+
+One judgement call beyond the request: `H` hides the search box along with the
+HUD and legend. A screenshot of the map with a search field in the corner is
+not a clean shot of the map. Hiding an input that holds focus would swallow
+keystrokes into something invisible, so focus is dropped with it.

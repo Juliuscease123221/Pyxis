@@ -69,10 +69,18 @@ function toCss(rgb, light) {
  * `colourOf(cat)` returns the cluster's palette colour so the label can be
  * tinted to match its region -- without it labels float free of the blobs they
  * name, and confidence has only opacity to signal with.
+ *
+ * `layerAlpha` multiplies every label's opacity, which is how the `L` toggle
+ * fades the whole layer. At zero the painting is skipped but the *placement*
+ * still runs: the returned counts stay live while the layer is hidden, and
+ * more importantly nothing about the LOD or collision state has to be rebuilt
+ * when it comes back, so re-enabling is correct for the current viewport on
+ * the very next frame rather than one frame late.
  */
-export function drawLabels(ctx, entries, project, dpr, colourOf) {
+export function drawLabels(ctx, entries, project, dpr, colourOf, layerAlpha = 1) {
   const placed = [];
   let drawn = 0, suppressed = 0, unlabelled = 0;
+  const paint = layerAlpha > 0.001;
 
   ctx.save();
   ctx.textAlign = 'center';
@@ -107,13 +115,15 @@ export function drawLabels(ctx, entries, project, dpr, colourOf) {
     if (placed.some(p => overlaps(box, p))) { suppressed++; continue; }
     placed.push(box);
 
-    ctx.globalAlpha = opacity * style.alpha;
-    ctx.lineWidth = 3.4 * dpr;
-    ctx.strokeStyle = 'rgba(13,17,23,0.92)';
-    ctx.strokeText(text, sx, sy);
-    const rgb = colourOf ? colourOf(cat) : null;
-    ctx.fillStyle = rgb ? toCss(rgb, style.light) : '#e6edf3';
-    ctx.fillText(text, sx, sy);
+    if (paint) {
+      ctx.globalAlpha = opacity * style.alpha * layerAlpha;
+      ctx.lineWidth = 3.4 * dpr;
+      ctx.strokeStyle = 'rgba(13,17,23,0.92)';
+      ctx.strokeText(text, sx, sy);
+      const rgb = colourOf ? colourOf(cat) : null;
+      ctx.fillStyle = rgb ? toCss(rgb, style.light) : '#e6edf3';
+      ctx.fillText(text, sx, sy);
+    }
     drawn++;
   }
 
