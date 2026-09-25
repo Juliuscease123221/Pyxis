@@ -1061,7 +1061,7 @@ trusted:
   `review_count` as an example column name. The library was already structurally
   clean; its prose was not.
 
-Everything Atlas-specific lives in `export_tiles.py` at the repo root, which
+Everything Overworld-specific lives in `export_tiles.py` at the repo root, which
 flattens the catalog, cluster tree and layout into five anonymous columns plus
 a manifest. Nothing in `tiles/` would need to change for a different dataset.
 

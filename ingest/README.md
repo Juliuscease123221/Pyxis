@@ -1,6 +1,6 @@
 # ingest — Phase 1
 
-Turns the Steam catalog into `data/atlas.db`, filtered and tagged.
+Turns the Steam catalog into `data/overworld.db`, filtered and tagged.
 
 ## Reproduce
 

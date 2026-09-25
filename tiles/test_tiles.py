@@ -254,7 +254,7 @@ def test_cli_build_end_to_end(tmp_path):
 # -------------------------------------------------------------- standalone
 
 def test_library_imports_nothing_from_the_host_repo():
-    """`tiles` ships as its own project, so it must not reach into Atlas.
+    """`tiles` ships as its own project, so it must not reach into Overworld.
 
     Checked by parsing the source rather than by convention, because this is
     the constraint most easily broken by a one-line convenience import.
