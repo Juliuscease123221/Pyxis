@@ -35,12 +35,23 @@ async function boot() {
 
   function resize() {
     for (const el of [canvas, overlay]) {
-      el.width = el.clientWidth * dpr;
-      el.height = el.clientHeight * dpr;
+      // Clamp to 1px. A pane that is hidden, collapsed or not yet laid out
+      // reports clientWidth 0, and a zero-size canvas makes aspect() 0/0 =
+      // NaN, which propagates into every scale derived from it.
+      el.width = Math.max(1, el.clientWidth * dpr);
+      el.height = Math.max(1, el.clientHeight * dpr);
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
   resize();
+
+  // Whether the canvas has ever had a real layout. Booting into a zero-size
+  // canvas computed `home` against a viewport that did not exist yet, and the
+  // resize handler then repaired `home.scale` but left `view.scale` holding
+  // the bad value -- so the map stayed blank with "zNaN" in the HUD and never
+  // recovered, however much you panned or zoomed. The first real layout now
+  // re-homes the view instead.
+  let sized = canvas.clientWidth > 0 && canvas.clientHeight > 0;
 
   const regl = createREGL({ canvas, attributes: {
     antialias: false, alpha: false, preserveDrawingBuffer: true } });
@@ -452,7 +463,13 @@ async function boot() {
     refreshTiles();
   }, { passive: false });
   window.addEventListener('resize', () => {
-    resize(); home.scale = fitScale(); refreshTiles(true);
+    resize();
+    home.scale = fitScale();
+    if (!sized && canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+      sized = true;
+      Object.assign(view, home);
+    }
+    refreshTiles(true);
   });
   // A single-letter shortcut must never fire while the caret is in a field --
   // typing "l" in the search box has to produce an "l". Testing the focused
