@@ -1,6 +1,6 @@
 """Stage viewer assets: a tile pyramid, a manifest, sharded metadata, neighbours.
 
-Everything here is Overworld-specific. The tile pyramid is built by the `tiles`
+Everything here is Pyxis-specific. The tile pyramid is built by the `tiles`
 library, which is handed five anonymous columns and never learns what they
 mean.
 

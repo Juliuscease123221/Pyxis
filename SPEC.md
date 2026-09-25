@@ -1,4 +1,4 @@
-# Overworld
+# Pyxis
 
 A zoomable map of the Steam catalog where zoom levels come from a semantic cluster
 hierarchy, not geometric tiles.
@@ -71,7 +71,7 @@ leaf→root), `importance` (review count), metadata for tooltips.
 Repo layout:
 
 ```
-overworld/
+pyxis/
   ingest/    data acquisition + resumable crawler
   embed/     vectorization, three variants
   cluster/   HDBSCAN tree extraction + labeling

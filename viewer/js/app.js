@@ -1,4 +1,4 @@
-// Overworld viewer.
+// Pyxis viewer.
 //
 // Reading order: binary.js (decode) -> tilestore.js (streaming) ->
 // hierarchy.js (LOD rule) -> labels.js (placement) -> scene.js (WebGL) ->
@@ -256,7 +256,7 @@ async function boot() {
 
   // ---- frame ------------------------------------------------------------
   // Tuned by eye; see the note in scene.js on why this is a tint and not
-  // a hull. Exposed on window.__overworld for adjustment without a rebuild.
+  // a hull. Exposed on window.__pyxis for adjustment without a rebuild.
   const DENSITY = { size: 62, alpha: 0.013 };
   const CARD_DEBOUNCE_MS = 80;
   let cardTimer = null;
@@ -647,7 +647,7 @@ async function boot() {
     },
     { canvas, overlay, drawFrame });
 
-  window.__overworld = {
+  window.__pyxis = {
     DENSITY, card, images, showCardFor,
     toggleLabels, toggleChrome, labelAlpha, layer,
     H, view, home, scene, regl, tiles, meta, project, unproject,
@@ -664,7 +664,7 @@ async function boot() {
     }),
     constants: { VISIBLE_MIN, VISIBLE_MAX, PRUNE_PURITY },
   };
-  document.dispatchEvent(new CustomEvent('overworld-ready'));
+  document.dispatchEvent(new CustomEvent('pyxis-ready'));
 }
 
 boot().catch(err => {

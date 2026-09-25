@@ -1,4 +1,4 @@
-"""Load the FronkonGames dump into the Overworld SQLite database, with filtering.
+"""Load the FronkonGames dump into the Pyxis SQLite database, with filtering.
 
 Two source files, because neither is complete on its own:
 

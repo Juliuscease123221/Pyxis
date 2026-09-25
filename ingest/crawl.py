@@ -40,7 +40,7 @@ import requests
 from .db import DEFAULT_DB, connect
 
 STEAMSPY_URL = "https://steamspy.com/api.php"
-USER_AGENT = "overworld-steam-map/0.1 (dataset research; contact via repo)"
+USER_AGENT = "pyxis-steam-map/0.1 (dataset research; contact via repo)"
 MIN_TAGS = 3
 
 CRAWL_LOG_SCHEMA = """

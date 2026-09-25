@@ -1,4 +1,4 @@
-"""Parameter sweep for HDBSCAN on the Overworld embedding.
+"""Parameter sweep for HDBSCAN on the Pyxis embedding.
 
 The first run at SPEC.md's suggested settings (50 dims, min_cluster_size=25,
 min_samples=5) put **84.2% of the catalog in noise** and produced a condensed

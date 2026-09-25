@@ -8,7 +8,7 @@
 // Usage from the console (or a driver script):
 //   await window.__capture({ frames: 90, target: 'Hollow Knight' })
 
-export function installCapture(overworld, { canvas, overlay, drawFrame }) {
+export function installCapture(pyxis, { canvas, overlay, drawFrame }) {
   const composite = document.createElement('canvas');
   const cctx = composite.getContext('2d');
 
@@ -95,7 +95,7 @@ export function installCapture(overworld, { canvas, overlay, drawFrame }) {
   async function run({ frames = 80, target = 'Hollow Knight', zoom = 45,
                        scale = 0.55, settle = 2, captionFrom = 0.72 } = {}) {
     const { view, home, setFocus, neighbours, pathOf, metaOf, worldOf,
-            findByName, refreshTiles } = overworld;
+            findByName, refreshTiles } = pyxis;
 
     const gid = await findByName(target);
     if (gid < 0) throw new Error(`no such game: ${target}`);

@@ -1,11 +1,11 @@
-"""Adapter: Overworld data -> the generic point/manifest schema `tiles` consumes.
+"""Adapter: Pyxis data -> the generic point/manifest schema `tiles` consumes.
 
 This script lives **outside** the tiles package on purpose. `tiles` ships as
 its own project and must not know what a game is, so everything Steam-specific
 happens here: reading the catalog, the cluster tree and the layout, and
 flattening them into five anonymous columns plus a category manifest.
 
-Anything in this file is Overworld's problem. Anything in `tiles/` would have to
+Anything in this file is Pyxis's problem. Anything in `tiles/` would have to
 work unchanged for a different dataset.
 
 Usage:

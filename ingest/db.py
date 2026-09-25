@@ -1,4 +1,4 @@
-"""SQLite schema and connection helpers for the Overworld ingest stage.
+"""SQLite schema and connection helpers for the Pyxis ingest stage.
 
 The schema is fixed by SPEC.md Phase 1. `games` holds one row per Steam app;
 `failures` tracks appids the crawler could not fetch so retries hit only those.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "overworld.db"
+DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "pyxis.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_games_review_count ON games(review_count);
 
 
 def connect(path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
-    """Open the Overworld database, creating the schema if needed.
+    """Open the Pyxis database, creating the schema if needed.
 
     WAL mode lets the background crawler write while evaluation scripts read.
     """
