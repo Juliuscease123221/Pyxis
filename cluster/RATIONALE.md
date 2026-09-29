@@ -2,9 +2,10 @@
 
 The differentiating piece of the project. Feeds EXPLAIN.md.
 
-**Shipped:** `tree_leiden_labelled.json` — multi-resolution Leiden over a
-cosine k-NN graph on the full 512-d vectors, nested by membership containment,
-labelled with sibling-scoped prevalence×lift over community tags.
+**Shipped:** `tree_leiden_recursive_labelled.json` — **recursive** Leiden, each
+community re-clustered on a k-NN graph rebuilt from only its own members over
+the full 512-d vectors, labelled with sibling-scoped prevalence×lift over
+community tags. Nesting is exact by construction.
 
 **Four methods were built, labelled and read.** All four stay in the repo,
 reproducible, because the comparison is the result. §10 has the head-to-head;
@@ -333,6 +334,11 @@ biggest-node share.
 
 Numbers did not decide it; paths did.
 
+> **Note.** The `Leiden` column here is the *multi-resolution* variant, which
+> won this bake-off and was then itself replaced by recursive Leiden (§11).
+> Its 38.5% parent-term repetition is also the pre-fix metric; the corrected
+> metric is in EXPLAIN.md, and the shipped tree scores 2.8%.
+
 - **UMAP→HDBSCAN** produced the cleanest *territories* but left a third of the
   catalog at depth 1 with no finer label, and put Dota 2 in an 8,550-game node
   labelled "First-Person / Horror / Psychological Horror" that never
@@ -395,10 +401,13 @@ list: nothing names a tag, the test is structural, and a globally ubiquitous
 tag fails it precisely because being everywhere is what makes it
 uninformative.
 
-In the shipped tree, 183 of 1,432 nodes are flagged, covering 22,074 games
-(39%). Two of the sixteen territories — "Indie / Action / Strategy" (2,397)
-and "Free to Play / VR / Indie" (1,275) — are among them and must render as
-unclustered ground, not as genres.
+In the *multi-resolution* tree this flagged 183 of 1,432 nodes, covering
+22,074 games (39%). In the shipped recursive tree it flags **86 of 1,117 nodes
+outright, with a further 114 weak**; by games that is 80.8% under a
+confidently-labelled node, 11.3% under a dimmed one and 7.9% under none. Only
+two of the twenty-seven territories fall below the bar — "Indie / Action /
+Simulation" (2,433) and "Indie / Dinosaurs / Hacking" (39) — and they render as
+unclustered ground rather than as genres.
 
 That 39% is high and is not a bug in the detector: it is the honest report that
 a large minority of the catalog sits in regions whose best available label is
@@ -416,26 +425,45 @@ from the graph rather than being imposed.
 
 ```
 games                 56,129        unclustered            0 (0.0%)
-cluster nodes          1,432        leaves               897
-max depth                  5        mean fan-out        2.67
-largest cluster        12.9%        unnamed nodes          0
-residue nodes    183 (22,074 games) build time         ~35s
+cluster nodes          1,117        leaves               874
+max depth                  4        territories           27
+largest cluster        10.0%        unnamed nodes          0
+containment purity     1.000        top-term repeat     2.8%
+  (exact)                           build time          ~39s
 ```
 
-Clusters per depth: 1 / 16 / 45 / 119 / 360 / 892.
-Games land at depth 4 (16.7%) and depth 5 (83.1%).
+Clusters per depth: 1 / 27 / 224 / 676 / 189.
+
+### Why recursive replaced multi-resolution
+
+Multi-resolution Leiden runs a flat partition at each resolution and imposes
+the hierarchy afterwards by majority containment, so a fine community
+straddling two coarse ones is assigned to whichever holds more of it. 709
+communities straddled; median containment purity was 0.90 with half the nodes
+below 0.9 — an *approximate* nesting presented as a tree.
+
+Recursive Leiden removes the failure mode rather than measuring it. Rebuilding
+the subgraph also changes the question at depth: "nearest" becomes nearest
+*among strategy games* rather than nearest in the whole catalog.
+
+| | multi-resolution | **recursive** |
+| --- | ---: | ---: |
+| containment purity | 0.90 median, 50% below 0.9 | **1.000, exact** |
+| nodes / leaves | 1,432 / 897 | 1,117 / 874 |
+| biggest node | 12.9% | **10.0%** |
+| top-level territories | 16 | 27 |
+| top-term repeat | 9.9% | **2.8%** |
+| build time | ~35s | ~39s |
+
+It also reads better: Terraria, Valheim, Rust and Fallout 4 all land under
+*Survival / Crafting / Open World Survival Craft*, where multi-resolution
+scattered them.
 
 ## 12. Known weaknesses
 
-- **Containment purity is only median 0.90, and 50% of nodes fall below 0.9.**
-  Leiden is flat at each resolution; the hierarchy is imposed afterwards by
-  majority containment, so a fine community that straddles two coarse ones is
-  assigned to whichever holds more of it. 709 nodes straddle. The tree is
-  therefore an *approximate* nesting, not a strict one, and `purity` is stored
-  per node so the viewer can see where it is weak. A strictly nested
-  alternative (agglomerating communities level by level) was not built.
-- **39% of games sit under a residue-flagged node.** Honest, but it means a
-  large part of the map has no confident label.
+- **Territory purity in the 2D layout is poor for 11 of 27 territories**, which
+  the viewer handles by declining to draw them (threshold 0.35). The hierarchy
+  is sound in 512-d; it is the projection that scatters them. See layout/.
 - **Dota 2 still enters under "FPS / Shooter"** at depth 1 and only reaches
   MOBA at depth 4. Its tag profile (Free to Play, Multiplayer, Strategy) is
   genuinely shooter-adjacent in this embedding.
