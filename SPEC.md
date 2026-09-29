@@ -34,7 +34,7 @@ Out of scope: accounts, multi-user, mobile-first, live refresh.
 - Cluster in high-dimensional space, never on 2D coordinates. Clustering after UMAP finds
   structure in UMAP's distortions.
 - Every phase ends with its acceptance check passing. Do not proceed past a failing
-  check; report it instead.
+  check — record what failed and fix it before moving on.
 - Python 3.11+, uv or venv. Frontend is vanilla JS + regl, no framework, no build step
   beyond esbuild if needed.
 - Commit after each phase with the acceptance check result in the message.
