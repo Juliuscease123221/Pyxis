@@ -118,6 +118,23 @@ async function boot() {
     scene.setPoints(P);
     grid = new Grid(P.x, P.y, manifest.bounds, 96);
     colourKey = '';                        // force a recolour for the new set
+
+    // Re-apply the halo against the new buffer.
+    //
+    // The highlight lives in a GPU buffer indexed by *slot*, and setPoints has
+    // just rebuilt both that buffer and the id->slot map, zeroing the halo. The
+    // anchor itself is plain JS state and survives, so without this the
+    // selection stayed in the panel while its halo silently vanished on any
+    // zoom that crossed a tile level.
+    //
+    // The bug predates the anchor: hover had it too, but a hover highlight
+    // never outlives the mouse movement that would reveal it.
+    //
+    // A point dropped from a coarse level by importance selection simply has
+    // no slot, and setHighlight skips it -- correct, since it is genuinely not
+    // on screen. Its neighbours that *are* present still halo, and zooming
+    // back in restores it.
+    if (anchor >= 0) scene.setHighlight(anchor, anchorNb);
   }
 
   // ---- colour by active ancestor ----------------------------------------
