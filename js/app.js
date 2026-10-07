@@ -159,20 +159,74 @@ async function boot() {
     return knnLoading;
   }
 
-  let focus = -1;
+  // Two selections, not one.
+  //
+  // The original code had a single `focus` serving both hover and search, and
+  // the two have incompatible lifetimes. Moving the cursor over empty space
+  // produced gid -1, which differed from `focus`, which tore down the halo,
+  // the panel and the card -- so a searched-for game evaporated the moment you
+  // moved the mouse toward it. Worse, moving toward one of its haloed
+  // neighbours destroyed the very halos you were following, which is the
+  // interaction that demonstrates the 10-15% neighbour-overlap finding.
+  //
+  //   anchor   committed. Set by search or click. Owns the highlight and the
+  //            panel. Survives any amount of mouse movement; cleared only by
+  //            an explicit act (click on empty space, the panel's close, esc).
+  //   hovered  ephemeral. Drives the floating card, and the highlight only
+  //            while nothing is anchored, so casual browsing still previews a
+  //            game's neighbours.
+  let anchor = -1;
+  let anchorNb = [];
+  let hovered = -1;
   let cursor = [0, 0];
 
-  async function setFocus(gid, showCard = true) {
-    focus = gid;
-    if (gid < 0) { scene.clearHighlight(); renderPanel(null); card.hide(); return; }
+  async function setAnchor(gid) {
+    anchor = gid;
+    if (gid < 0) {
+      anchorNb = [];
+      scene.clearHighlight();
+      renderPanel(null);
+      return;
+    }
     const knn = await ensureKnn();
-    if (focus !== gid) return;
+    if (anchor !== gid) return;
     const nb = Array.from(knn.neighboursOf(gid));
+    anchorNb = nb;
     scene.setHighlight(gid, nb);
     await meta.ensure([gid, ...nb]);
-    if (focus !== gid) return;
+    if (anchor !== gid) return;
     renderPanel(gid, nb);
-    if (showCard) showCardFor(gid, nb);
+  }
+
+  // Kept as the name the capture harness calls.
+  const setFocus = setAnchor;
+
+  async function setHover(gid) {
+    hovered = gid;
+    if (anchor >= 0) return;            // the anchor owns the highlight
+    if (gid < 0) { scene.clearHighlight(); return; }
+    const knn = await ensureKnn();
+    if (hovered !== gid || anchor >= 0) return;
+    scene.setHighlight(gid, Array.from(knn.neighboursOf(gid)));
+  }
+
+  // Screen positions the card must not cover: the haloed neighbours, which are
+  // the thing the selection exists to show.
+  function avoidPoints() {
+    const out = [];
+    for (const n of anchorNb) {
+      const k = scene.indexOfId(n);
+      if (k === undefined) continue;
+      const [sx, sy] = project(scene.points.x[k], scene.points.y[k]);
+      out.push([sx / dpr, sy / dpr]);
+    }
+    return out;
+  }
+
+  async function previewCard(gid) {
+    await meta.ensure([gid]);
+    if (hovered !== gid) return;
+    showCardFor(gid, anchorNb);
   }
 
   function showCardFor(gid, nb) {
@@ -182,16 +236,7 @@ async function boot() {
     const cat = slot === undefined ? null : H.byId.get(scene.points.cat[slot]);
     const colour = cat ? colourOfCategory(cat) : [0.5, 0.6, 0.7];
 
-    // Screen positions of the haloed neighbours, so the card can flip away
-    // from them rather than covering the thing it is meant to explain.
-    const avoid = [];
-    for (const n of nb) {
-      const k = scene.indexOfId(n);
-      if (k === undefined) continue;
-      const [sx, sy] = project(scene.points.x[k], scene.points.y[k]);
-      avoid.push([sx / dpr, sy / dpr]);
-    }
-    card.show(m, colour, cursor[0], cursor[1], avoid);
+    card.show(m, colour, cursor[0], cursor[1], avoidPoints());
   }
 
   function renderPanel(gid, nb) {
@@ -237,7 +282,14 @@ async function boot() {
     }
 
     const names = nb.slice(0, 6).map(n => meta.get(n)?.name || '…');
+    const colour = leaf ? colourOfCategory(leaf) : [0.5, 0.6, 0.7];
+    const tint = `rgb(${colour.map(c => Math.round(c * 255 * 0.55)).join(',')})`;
     panel.innerHTML = `
+      <button class="close" title="Clear selection (esc)">×</button>
+      <div class="shot" style="background-color:${tint}">
+        <img class="hdr" alt="" hidden>
+        <div class="ph">${esc(m.name.slice(0, 2).toUpperCase())}</div>
+      </div>
       <div class="name">${esc(m.name)}</div>
       <div class="tags">${m.tags.map(esc).join(' · ')}</div>
       <div class="path">${path.map(esc).join(' <span>›</span> ')}</div>
@@ -248,7 +300,27 @@ async function boot() {
         <ol>${names.map(n => `<li>${esc(n)}</li>`).join('')}</ol>
       </div>
       <div class="foot">${m.reviews.toLocaleString()} reviews ·
-        cluster “${esc(leaf ? leaf.label : '')}” (${leaf ? leaf.confidence : '—'})</div>`;
+        cluster “${esc(leaf ? leaf.label : '')}” (${leaf ? leaf.confidence : '—'})</div>
+      <a class="steam" href="${STORE_URL(m.appid)}" target="_blank"
+         rel="noopener">Open on Steam ↗</a>`;
+
+    panel.querySelector('.close').addEventListener('click', () => {
+      setAnchor(-1);
+    });
+
+    // Same lazy, cache-by-appid path the card uses: nothing is preloaded,
+    // and a 404 leaves the tinted placeholder rather than retrying.
+    const shot = panel.querySelector('.shot');
+    const img = shot.querySelector('img.hdr');
+    const attach = (res) => {
+      if (anchor !== gid || res === 'missing' || !res) return;
+      img.src = res.src;
+      img.hidden = false;
+      shot.classList.add('loaded');
+    };
+    const cached = images.peek(m.appid);
+    if (cached && cached !== 'missing') attach(cached);
+    else if (cached !== 'missing') images.load(m.appid).then(attach);
   }
 
   const esc = (s) => String(s).replace(/[&<>"']/g, c =>
@@ -260,7 +332,6 @@ async function boot() {
   const DENSITY = { size: 62, alpha: 0.013 };
   const CARD_DEBOUNCE_MS = 80;
   let cardTimer = null;
-  let hovered = -1;
 
   let labelStats = { drawn: 0, suppressed: 0, unlabelled: 0 };
   let frames = 0, fps = 0, lastT = performance.now();
@@ -331,7 +402,7 @@ async function boot() {
     const boost = scene.count > 20000 ? 0.9 : 1.25;
     scene.draw({ view, dim: 0, density: 1,
                  densitySize: DENSITY.size, densityAlpha: DENSITY.alpha });
-    scene.draw({ view, dim: focus >= 0 ? 1 : 0, pointBoost: boost });
+    scene.draw({ view, dim: anchor >= 0 ? 1 : 0, pointBoost: boost });
 
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     const entries = H.visibleLabels(project, overlay.width, overlay.height);
@@ -406,31 +477,29 @@ async function boot() {
 
     // A point under the cursor is a link, so it should look like one.
     canvas.style.cursor = gid >= 0 ? 'pointer' : 'crosshair';
-    hovered = gid;
 
-    if (gid !== focus) {
+    if (gid !== hovered) {
       // Halo immediately -- it is already-loaded data and feels instant --
       // but debounce the card, which fetches a header image. Dragging the
       // cursor across the map would otherwise fire a request per pixel.
-      setFocus(gid, false);
+      setHover(gid);
       clearTimeout(cardTimer);
       if (gid >= 0) {
-        cardTimer = setTimeout(() => {
-          if (hovered !== gid || focus !== gid) return;
-          ensureKnn().then(k => showCardFor(gid, Array.from(k.neighboursOf(gid))));
-        }, CARD_DEBOUNCE_MS);
+        cardTimer = setTimeout(() => previewCard(gid), CARD_DEBOUNCE_MS);
       } else {
         card.hide();
       }
     } else if (!card.el.hidden) {
-      card.place(cursor[0], cursor[1], []);
+      card.place(cursor[0], cursor[1], avoidPoints());
     }
   });
   canvas.addEventListener('mouseleave', () => {
+    // Only the preview goes. An anchored selection is the user's, and losing
+    // it because the cursor crossed the window edge is the whole bug.
     clearTimeout(cardTimer);
-    hovered = -1;
     canvas.style.cursor = 'crosshair';
-    setFocus(-1);
+    setHover(-1);
+    card.hide();
   });
 
   // Click opens the Steam page. Middle-click and ctrl/cmd-click are left to
@@ -449,7 +518,17 @@ async function boot() {
       button: e.button, bubbles: false,
     }));
   }
-  canvas.addEventListener('click', e => { if (e.button === 0) openStore(e); });
+  // Left click *selects* rather than navigating. Being thrown into a new tab
+  // for clicking a dot is aggressive, and previously there was no way to
+  // commit to a game at all without leaving the map. The store is still one
+  // action away: the panel carries an explicit link, and ctrl/cmd/shift-click
+  // and middle-click open it directly, matching how every other link behaves.
+  canvas.addEventListener('click', e => {
+    if (e.button !== 0) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey) { openStore(e); return; }
+    if (hovered >= 0) { setAnchor(hovered); card.hide(); }
+    else setAnchor(-1);                    // clicking the background clears
+  });
   canvas.addEventListener('auxclick', e => { if (e.button === 1) openStore(e); });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
@@ -492,7 +571,8 @@ async function boot() {
       // Checking focus is clearer than depending on registration order.
       if (typingInField()) return;
       clearTimeout(cardTimer);
-      Object.assign(view, home); setFocus(-1); refreshTiles();
+      Object.assign(view, home); setAnchor(-1); setHover(-1);
+      card.hide(); refreshTiles();
       return;
     }
 
@@ -528,6 +608,12 @@ async function boot() {
   // rather than sliding first and then zooming.
   let flight = null;
   function flyTo(target, ms = 600) {
+    // The hover preview describes whatever was under the cursor, and the
+    // camera is about to move out from under it. Keeping it would leave a
+    // card describing a game that is no longer where the pointer is.
+    clearTimeout(cardTimer);
+    setHover(-1);
+    card.hide();
     const from = { cx: view.cx, cy: view.cy, scale: view.scale };
     const t0 = performance.now();
     flight = { from, target, t0, ms };
@@ -577,16 +663,12 @@ async function boot() {
 
   async function flyToGame(r) {
     await flyTo({ cx: r.x, cy: r.y, scale: home.scale * 26 });
-    // select after arrival so the halo and card appear on the destination
-    // rather than streaking across the screen during the move
-    await setFocus(r.index);
-    const slot = scene.indexOfId(r.index);
-    if (slot !== undefined) {
-      const [sx, sy] = project(scene.points.x[slot], scene.points.y[slot]);
-      cursor = [sx / dpr, sy / dpr];
-      const knn = await ensureKnn();
-      showCardFor(r.index, Array.from(knn.neighboursOf(r.index)));
-    }
+    // Anchor on arrival rather than mid-flight, so the halo lands on the
+    // destination instead of streaking across the screen. No floating card:
+    // the cursor is still parked over the search box, and a card rendered
+    // there would sit in the opposite corner from the game it describes.
+    // The panel is fixed, so it does not care where the mouse is.
+    await setAnchor(r.index);
   }
 
   async function flyToLabel(r) {
@@ -651,7 +733,7 @@ async function boot() {
     DENSITY, card, images, showCardFor,
     toggleLabels, toggleChrome, labelAlpha, layer,
     H, view, home, scene, regl, tiles, meta, project, unproject,
-    benchFrames, setFocus, refreshTiles, findByName,
+    benchFrames, setFocus, setAnchor, setHover, refreshTiles, findByName,
     search, flyTo, flyToGame, flyToLabel, scaleToFit,
     labelStats: () => labelStats,
     timing: () => ({
