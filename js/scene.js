@@ -152,6 +152,13 @@ export function createScene(regl, dpr, capacity = 80000) {
       buffers.colour.subdata(colour.subarray(0, n * 3));
     },
 
+    /** Diagnostic: how many slots are currently flagged (1 = neighbour, 2 = focus). */
+    highlightCount() {
+      let n = 0;
+      for (let i = 0; i < current.count; i++) if (highlight[i] > 0) n++;
+      return n;
+    },
+
     clearHighlight() {
       highlight.fill(0, 0, current.count);
       buffers.highlight.subdata(highlight.subarray(0, current.count));
