@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pyxis — a semantic map of the Steam catalog</title>
+<style>
+  :root {
+    --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --dim:#6e7681;
+    --panel:rgba(22,27,34,.92); --border:#30363d; --accent:#ffe98c;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:var(--bg);
+    color:var(--fg);
+    font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  #app { position:fixed; inset:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #gl { cursor:crosshair; }
+  #overlay { pointer-events:none; }
+
+  #hud, #legend {
+    position:absolute; padding:7px 11px; background:var(--panel);
+    border:1px solid var(--border); border-radius:6px;
+    font-variant-numeric:tabular-nums; pointer-events:none;
+  }
+  #hud { top:12px; left:12px; }
+  #hud b { font-weight:600; } #hud span { color:var(--muted); }
+
+  #legend { bottom:12px; left:12px; color:var(--muted); line-height:1.7; }
+  #legend .row { display:flex; gap:7px; align-items:baseline; }
+  #legend .sw { display:inline-block; width:34px; text-align:center; }
+  #legend .strong { color:#f0f6fc; font-weight:600; }
+  #legend .normal { color:#c9d1d9; }
+  #legend .weak { color:#8b949e; font-style:italic; }
+  #legend .none { color:var(--dim); }
+  #legend .keys { margin-top:6px; padding-top:6px;
+    border-top:1px solid var(--border); line-height:1.55; }
+  #legend .keys kbd { margin-right:3px; }
+  #legend .keys .row { gap:0; }
+
+  /* `H` clears every fixed overlay for a clean capture. The search box is
+     chrome too -- a screenshot of the map with a search field in the corner is
+     not a clean shot of the map. */
+  body.no-chrome #hud,
+  body.no-chrome #legend,
+  body.no-chrome #search-wrap { display:none; }
+
+  #search-wrap { position:absolute; top:12px; right:12px; width:272px; z-index:6; }
+  #search {
+    width:100%; padding:7px 10px; border-radius:6px;
+    background:rgba(22,27,34,.94); border:1px solid var(--border);
+    color:var(--fg); font:13px/1.4 ui-sans-serif,system-ui,sans-serif;
+    outline:none;
+  }
+  #search:focus { border-color:#4d7ea8; background:rgba(22,27,34,.99); }
+  #search::placeholder { color:var(--dim); }
+  #search::-webkit-search-cancel-button { filter:invert(.6); }
+  #results {
+    margin-top:5px; background:rgba(22,27,34,.98);
+    border:1px solid var(--border); border-radius:6px; overflow:hidden;
+    box-shadow:0 10px 26px rgba(0,0,0,.5);
+  }
+  #results > div {
+    padding:6px 10px; cursor:pointer; display:flex; gap:7px;
+    align-items:baseline; border-bottom:1px solid rgba(48,54,61,.5);
+  }
+  #results > div:last-child { border-bottom:0; }
+  #results > div.on { background:#1f2733; }
+  #results .nm { flex:1; font-size:12.5px; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  /* Territory results read differently from games on purpose: they are a
+     different kind of destination, framed to a bounding box rather than a
+     point. */
+  #results .nm.lbl { color:#a9d1ff; }
+  #results .kind {
+    font-size:9.5px; text-transform:uppercase; letter-spacing:.06em;
+    color:#7d9ec0; background:#1c2b3a; border:1px solid #274056;
+    border-radius:3px; padding:1px 4px; flex:none;
+  }
+  #results .sub { font-size:11px; color:var(--dim); flex:none; }
+  #results .loading { padding:8px 10px; color:var(--dim); font-size:12px; }
+
+  #panel {
+    position:absolute; top:56px; right:12px; width:272px; padding:12px 13px;
+    background:var(--panel); border:1px solid var(--border); border-radius:6px;
+    pointer-events:none;
+  }
+  #panel .name { font-size:15px; font-weight:600; margin-bottom:2px; }
+  #panel .tags { color:var(--muted); font-size:11.5px; margin-bottom:9px; }
+  #panel .path { font-size:11.5px; color:#c9d1d9; margin-bottom:10px;
+    padding-bottom:9px; border-bottom:1px solid var(--border); }
+  #panel .path span { color:var(--dim); }
+  #panel .nb b { color:var(--fg); }
+  #panel .nb { font-size:11.5px; color:var(--muted); }
+  #panel .verdict { font-weight:600; }
+  #panel .verdict.cohesive { color:#7ee787; }
+  #panel .verdict.partly { color:#e3b341; }
+  #panel .verdict.scattered { color:#ff7b72; }
+  #panel .hint { color:var(--dim); margin:3px 0 6px; }
+  #panel ol { margin:0; padding-left:17px; color:#c9d1d9; }
+  #panel ol li { margin:1px 0; }
+  #panel .foot { margin-top:9px; padding-top:8px; border-top:1px solid var(--border);
+    color:var(--dim); font-size:11px; }
+
+  /* Hover card. Fixed-position so it can flip past the canvas edges, and
+     pointer-events:none so it never eats the click that opens the store. */
+  #card {
+    position:fixed; width:268px; z-index:5; pointer-events:none;
+    background:rgba(22,27,34,.97); border:1px solid var(--border);
+    border-radius:8px; overflow:hidden;
+    box-shadow:0 10px 30px rgba(0,0,0,.55);
+  }
+  /* Locked to the Steam header's own aspect (460x215 = 2.1395) and the image
+     is width:100%, so it can never be cropped. Steam composes these with the
+     title centred, so any crop is destructive -- letterbox instead. */
+  #card .shot {
+    aspect-ratio: 460 / 215; width:100%;
+    display:grid; place-items:center; overflow:hidden; position:relative;
+  }
+  #card .shot img.hdr {
+    position:absolute; inset:0;
+    width:100%; height:100%; object-fit:contain; display:block;
+  }
+  /* The placeholder shows until the image arrives, and stays if it 404s --
+     plenty of delisted games have no header any more. */
+  #card .shot .ph {
+    font:600 26px/1 ui-sans-serif,system-ui,sans-serif;
+    color:rgba(255,255,255,.62); letter-spacing:.06em;
+  }
+  #card .shot.loaded .ph { display:none; }
+  #card .body { padding:9px 11px 10px; }
+  #card .title { font-size:14px; font-weight:600; margin-bottom:5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #card .tagrow { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
+  #card .tagrow span {
+    font-size:10.5px; color:#adbac7; background:#21262d;
+    border:1px solid #30363d; border-radius:3px; padding:1px 5px;
+  }
+  #card .meta { display:flex; justify-content:space-between; align-items:baseline;
+    font-size:11.5px; margin-top:2px; }
+  #card .dim { color:var(--dim); }
+  #card .price { color:#e6edf3; font-weight:600; }
+  #card .score { font-weight:600; }
+  #card .score.good { color:#7ee787; }
+  #card .score.mixed { color:#e3b341; }
+  #card .score.poor { color:#ff7b72; }
+  #card .hint { margin-top:8px; padding-top:7px; border-top:1px solid var(--border);
+    font-size:10.5px; color:var(--dim); }
+
+  #status { position:absolute; inset:0; display:grid; place-items:center;
+    color:var(--muted); font-size:14px; }
+  kbd { background:#21262d; border:1px solid var(--border); border-bottom-width:2px;
+    border-radius:4px; padding:0 4px; font:inherit; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="gl"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="hud"></div>
+  <div id="search-wrap">
+    <input id="search" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Search games or territories…   /">
+    <div id="results" hidden></div>
+  </div>
+  <div id="panel" hidden></div>
+  <div id="card" hidden></div>
+  <div id="legend">
+    <div class="row"><span class="sw strong">Aa</span> confident label</div>
+    <div class="row"><span class="sw weak">Aa</span> weak — barely distinguishes the region</div>
+    <div class="row"><span class="sw none">—</span> no label — scattered or unnamed</div>
+    <div class="row" style="margin-top:5px">hover for neighbours · click to open on Steam</div>
+    <div class="keys">
+      <div class="row"><kbd>L</kbd> — toggle labels</div>
+      <div class="row"><kbd>H</kbd> — hide HUD and legend</div>
+      <div class="row"><kbd>F</kbd> — fit to home view</div>
+      <div class="row"><kbd>/</kbd> — search &nbsp;·&nbsp; <kbd>esc</kbd> — reset</div>
+    </div>
+  </div>
+  <div id="status">loading…</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/regl/2.1.0/regl.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
