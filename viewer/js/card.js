@@ -150,7 +150,7 @@ export class HoverCard {
             <span class="dim">${m.year ?? '—'}</span>
             <span class="price">${price ?? '—'}</span>
           </div>
-          <div class="hint">click to open on Steam ↗</div>
+          <div class="hint">click to select · ctrl-click opens Steam ↗</div>
         </div>`;
 
       // Image arrives asynchronously; the coloured placeholder is what shows
